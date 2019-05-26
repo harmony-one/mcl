@@ -109,7 +109,7 @@ ifeq ($(MCL_USE_GMP),1)
   GMP_LIB=-lgmp -lgmpxx
 endif
 ifeq ($(MCL_USE_OPENSSL),1)
-  OPENSSL_LIB=-lcrypto
+  OPENSSL_LIB=-L${OPENSSL_DIR}/lib -lcrypto
 endif
 LDFLAGS+=$(GMP_LIB) $(OPENSSL_LIB) $(BIT_OPT) $(LDFLAGS_USER)
 
