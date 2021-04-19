@@ -118,12 +118,22 @@ class FixedArray {
 		y = t;
 	}
 public:
+	typedef T value_type;
 	FixedArray() : n_(0) {}
 	bool resize(size_t n)
 	{
 		if (n > maxSize) return false;
 		n_ = n;
 		return true;
+	}
+	void push(bool *pb, const T& x)
+	{
+		if (n_ == maxSize) {
+			*pb = false;
+			return;
+		}
+		p_[n_++] = x;
+		*pb = true;
 	}
 	bool copy(const FixedArray<T, maxSize>& rhs)
 	{

@@ -73,6 +73,9 @@ bool isEnableJIT(); // 1st call is not threadsafe
 uint32_t sha256(void *out, uint32_t maxOutSize, const void *msg, uint32_t msgSize);
 uint32_t sha512(void *out, uint32_t maxOutSize, const void *msg, uint32_t msgSize);
 
+// draft-07 outSize = 128 or 256
+void expand_message_xmd(uint8_t out[], size_t outSize, const void *msg, size_t msgSize, const void *dst, size_t dstSize);
+
 namespace local {
 
 inline void byteSwap(void *x, size_t n)
@@ -131,6 +134,9 @@ public:
 	{
 		assert(maxBitSize <= MCL_MAX_BIT_SIZE);
 		*pb = op_.init(p, maxBitSize, xi_a, mode);
+#ifdef MCL_DUMP_JIT
+		return;
+#endif
 		if (!*pb) return;
 		{ // set oneRep
 			FpT& one = *reinterpret_cast<FpT*>(op_.oneRep);
@@ -157,6 +163,10 @@ public:
 		if (mul == 0) mul = mulC;
 		sqr = fp::func_ptr_cast<void (*)(FpT& y, const FpT& x)>(op_.fp_sqrA_);
 		if (sqr == 0) sqr = sqrC;
+		mul2 = fp::func_ptr_cast<void (*)(FpT& y, const FpT& x)>(op_.fp_mul2A_);
+		if (mul2 == 0) mul2 = mul2C;
+		mul9 = fp::func_ptr_cast<void (*)(FpT& y, const FpT& x)>(op_.fp_mul9A_);
+		if (mul9 == 0) mul9 = mul9C;
 #endif
 		*pb = true;
 	}
@@ -259,7 +269,7 @@ public:
 	{
 		bool isMinus = false;
 		*pb = false;
-		if (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr)) {
+		if (fp::isIoSerializeMode(ioMode)) {
 			const size_t n = getByteSize();
 			v_[op_.N - 1] = 0;
 			size_t readSize;
@@ -295,7 +305,7 @@ public:
 	void save(bool *pb, OutputStream& os, int ioMode) const
 	{
 		const size_t n = getByteSize();
-		if (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr)) {
+		if (fp::isIoSerializeMode(ioMode)) {
 			if (ioMode & IoArrayRaw) {
 				cybozu::write(pb, os, v_, n);
 			} else {
@@ -330,6 +340,7 @@ public:
 	}
 	/*
 		mode = Mod : set x mod p if sizeof(S) * n <= 64 else error
+		set array x as little endian
 	*/
 	template<class S>
 	void setArray(bool *pb, const S *x, size_t n, mcl::fp::MaskMode mode = fp::NoMask)
@@ -345,6 +356,15 @@ public:
 	{
 		fp::copyAndMask(v_, x, sizeof(S) * n, op_, fp::MaskAndMod);
 		toMont();
+	}
+	/*
+		set (array mod p)
+		error if sizeof(S) * n > 64
+	*/
+	template<class S>
+	void setArrayMod(bool *pb, const S *x, size_t n)
+	{
+		setArray(pb, x, n, fp::Mod);
 	}
 
 	/*
@@ -366,6 +386,54 @@ public:
 			b.p = &v_[0];
 		}
 	}
+	/*
+		write a value with little endian
+		write buf[0] = 0 and return 1 if the value is 0
+		return written size if success else 0
+	*/
+	size_t getLittleEndian(void *buf, size_t maxBufSize) const
+	{
+		fp::Block b;
+		getBlock(b);
+		const uint8_t *src = (const uint8_t *)b.p;
+		uint8_t *dst = (uint8_t *)buf;
+		size_t n = b.n * sizeof(b.p[0]);
+		while (n > 0) {
+			if (src[n - 1]) break;
+			n--;
+		}
+		if (n == 0) n = 1; // zero
+		if (maxBufSize < n) return 0;
+		for (size_t i = 0; i < n; i++) {
+			dst[i] = src[i];
+		}
+		return n;
+	}
+	/*
+		set (little endian % p)
+		error if bufSize > 64
+	*/
+	void setLittleEndianMod(bool *pb, const void *buf, size_t bufSize)
+	{
+		setArray(pb, (const char *)buf, bufSize, mcl::fp::Mod);
+	}
+	/*
+		set (big endian % p)
+		error if bufSize > 64
+	*/
+	void setBigEndianMod(bool *pb, const void *buf, size_t bufSize)
+	{
+		if (bufSize > 64) {
+			*pb = false;
+			return;
+		}
+		const uint8_t *p = (const uint8_t*)buf;
+		uint8_t swapBuf[64];
+		for (size_t i = 0; i < bufSize; i++) {
+			swapBuf[bufSize - 1 - i] = p[i];
+		}
+		setArray(pb, swapBuf, bufSize, mcl::fp::Mod);
+	}
 	void setByCSPRNG(bool *pb, fp::RandGen rg = fp::RandGen())
 	{
 		if (rg.isZero()) rg = fp::RandGen::get();
@@ -374,6 +442,18 @@ public:
 		setArrayMask(v_, op_.N);
 	}
 #ifndef CYBOZU_DONT_USE_EXCEPTION
+	void setLittleEndianMod(const void *buf, size_t bufSize)
+	{
+		bool b;
+		setLittleEndianMod(&b, buf, bufSize);
+		if (!b) throw cybozu::Exception("setLittleEndianMod");
+	}
+	void setBigEndianMod(const void *buf, size_t bufSize)
+	{
+		bool b;
+		setBigEndianMod(&b, buf, bufSize);
+		if (!b) throw cybozu::Exception("setBigEndianMod");
+	}
 	void setByCSPRNG(fp::RandGen rg = fp::RandGen())
 	{
 		bool b;
@@ -419,15 +499,31 @@ public:
 	static inline void mulC(FpT& z, const FpT& x, const FpT& y) { op_.fp_mul(z.v_, x.v_, y.v_, op_.p); }
 	static void (*sqr)(FpT& y, const FpT& x);
 	static inline void sqrC(FpT& y, const FpT& x) { op_.fp_sqr(y.v_, x.v_, op_.p); }
+	static void (*mul2)(FpT& y, const FpT& x);
+	static inline void mul2C(FpT& y, const FpT& x) { op_.fp_mul2(y.v_, x.v_, op_.p); }
+	static void (*mul9)(FpT& y, const FpT& x);
+	static inline void mul9C(FpT& y, const FpT& x) { mulSmall(y, x, 9); }
 #else
 	static inline void add(FpT& z, const FpT& x, const FpT& y) { op_.fp_add(z.v_, x.v_, y.v_, op_.p); }
 	static inline void sub(FpT& z, const FpT& x, const FpT& y) { op_.fp_sub(z.v_, x.v_, y.v_, op_.p); }
 	static inline void neg(FpT& y, const FpT& x) { op_.fp_neg(y.v_, x.v_, op_.p); }
 	static inline void mul(FpT& z, const FpT& x, const FpT& y) { op_.fp_mul(z.v_, x.v_, y.v_, op_.p); }
 	static inline void sqr(FpT& y, const FpT& x) { op_.fp_sqr(y.v_, x.v_, op_.p); }
+	static inline void mul2(FpT& y, const FpT& x) { op_.fp_mul2(y.v_, x.v_, op_.p); }
+	static inline void mul9(FpT& y, const FpT& x) { mulSmall(y, x, 9); }
 #endif
 	static inline void addPre(FpT& z, const FpT& x, const FpT& y) { op_.fp_addPre(z.v_, x.v_, y.v_); }
 	static inline void subPre(FpT& z, const FpT& x, const FpT& y) { op_.fp_subPre(z.v_, x.v_, y.v_); }
+	static inline void mulSmall(FpT& z, const FpT& x, const uint32_t y)
+	{
+		assert(y <= op_.smallModp.maxMulN);
+		Unit xy[maxSize + 1];
+		op_.fp_mulUnitPre(xy, x.v_, y);
+		int v = op_.smallModp.approxMul(xy);
+		const Unit *pv = op_.smallModp.getPmul(v);
+		op_.fp_subPre(z.v_, xy, pv);
+		op_.fp_sub(z.v_, z.v_, op_.p, op_.p);
+	}
 	static inline void mulUnit(FpT& z, const FpT& x, const Unit y)
 	{
 		if (mulSmallUnit(z, x, y)) return;
@@ -526,8 +622,11 @@ public:
 	}
 	static void setETHserialization(bool ETHserialization)
 	{
-		if (getBitSize() != 381) return;
 		isETHserialization_ = ETHserialization;
+	}
+	static bool getETHserialization()
+	{
+		return isETHserialization_;
 	}
 	static inline bool isETHserialization() { return isETHserialization_; }
 	static inline int getIoMode() { return ioMode_; }
@@ -661,10 +760,13 @@ template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::sub)(FpT& z,
 template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::neg)(FpT& y, const FpT& x);
 template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::mul)(FpT& z, const FpT& x, const FpT& y);
 template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::sqr)(FpT& y, const FpT& x);
+template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::mul2)(FpT& y, const FpT& x);
+template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::mul9)(FpT& y, const FpT& x);
 #endif
 
 } // mcl
 
+#ifndef CYBOZU_DONT_USE_EXCEPTION
 #ifdef CYBOZU_USE_BOOST
 namespace mcl {
 
@@ -687,6 +789,7 @@ struct hash<mcl::FpT<tag, maxBitSize> > {
 };
 
 CYBOZU_NAMESPACE_TR1_END } // std::tr1
+#endif
 #endif
 
 #ifdef _MSC_VER

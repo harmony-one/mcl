@@ -14,8 +14,11 @@
 	#define MCL_DONT_USE_XBYAK
 	#define MCL_DONT_USE_OPENSSL
 #endif
-#if !defined(MCL_DONT_USE_XBYAK) && (defined(_WIN64) || defined(__x86_64__)) && (MCL_SIZEOF_UNIT == 8)
+#if !defined(MCL_DONT_USE_XBYAK) && (defined(_WIN64) || defined(__x86_64__)) && (MCL_SIZEOF_UNIT == 8) && !defined(MCL_STATIC_CODE)
 	#define MCL_USE_XBYAK
+#endif
+#if defined(MCL_USE_XBYAK) || defined(MCL_STATIC_CODE)
+	#define MCL_X64_ASM
 	#define MCL_XBYAK_DIRECT_CALL
 #endif
 
@@ -23,7 +26,7 @@
 
 namespace mcl {
 
-static const int version = 0x094; /* 0xABC = A.BC */
+static const int version = 0x140; /* 0xABC = A.BC */
 
 /*
 	specifies available string format mode for X::setIoMode()
@@ -101,15 +104,28 @@ enum IoMode {
 	IoSerialize = 512, // use MBS for 1-bit y
 	IoFixedSizeByteSeq = IoSerialize, // obsolete
 	IoEcProj = 1024, // projective or jacobi coordinate
-	IoSerializeHexStr = 2048 // printable hex string
+	IoSerializeHexStr = 2048, // printable hex string
+	IoEcAffineSerialize = 4096 // serialize [x:y]
 };
 
 namespace fp {
+
+inline bool isIoSerializeMode(int ioMode)
+{
+	return ioMode & (IoArray | IoArrayRaw | IoSerialize | IoEcAffineSerialize | IoSerializeHexStr);
+}
 
 const size_t UnitBitSize = sizeof(Unit) * 8;
 
 const size_t maxUnitSize = (MCL_MAX_BIT_SIZE + UnitBitSize - 1) / UnitBitSize;
 #define MCL_MAX_UNIT_SIZE ((MCL_MAX_BIT_SIZE + MCL_UNIT_BIT_SIZE - 1) / MCL_UNIT_BIT_SIZE)
+
+const size_t maxMulVecN = 32; // inner loop of mulVec
+
+#ifndef MCL_MAX_MUL_VEC_NGLV
+	#define MCL_MAX_MUL_VEC_NGLV 16
+#endif
+const size_t maxMulVecNGLV = MCL_MAX_MUL_VEC_NGLV; // inner loop of mulVec with GLV
 
 struct FpGenerator;
 struct Op;
@@ -175,6 +191,7 @@ struct Op {
 	uint32_t pmod4;
 	mcl::SquareRoot sq;
 	mcl::Modp modp;
+	mcl::SmallModp smallModp;
 	Unit half[maxUnitSize]; // (p + 1) / 2
 	Unit oneRep[maxUnitSize]; // 1(=inv R if Montgomery)
 	/*
@@ -189,6 +206,8 @@ struct Op {
 	Unit R3[maxUnitSize];
 #ifdef MCL_USE_XBYAK
 	FpGenerator *fg;
+#endif
+#ifdef MCL_X64_ASM
 	mcl::Array<Unit> invTbl;
 #endif
 	void3u fp_addA_;
@@ -196,18 +215,20 @@ struct Op {
 	void2u fp_negA_;
 	void3u fp_mulA_;
 	void2u fp_sqrA_;
+	void2u fp_mul2A_;
+	void2u fp_mul9A_;
 	void3u fp2_addA_;
 	void3u fp2_subA_;
 	void2u fp2_negA_;
 	void3u fp2_mulA_;
 	void2u fp2_sqrA_;
+	void2u fp2_mul2A_;
 	void3u fpDbl_addA_;
 	void3u fpDbl_subA_;
-	void3u fpDbl_mulPreA_;
-	void2u fpDbl_sqrPreA_;
 	void2u fpDbl_modA_;
 	void3u fp2Dbl_mulPreA_;
 	void2u fp2Dbl_sqrPreA_;
+	void2u fp2Dbl_mul_xiA_;
 	size_t maxN;
 	size_t N;
 	size_t bitSize;
@@ -220,6 +241,7 @@ struct Op {
 	void4u fp_sub;
 	void4u fp_mul;
 	void3u fp_sqr;
+	void3u fp_mul2;
 	void2uOp fp_invOp;
 	void2uIu fp_mulUnit; // fpN1_mod + fp_mulUnitPre
 
@@ -275,7 +297,7 @@ struct Op {
 		memset(one, 0, sizeof(one));
 		memset(R2, 0, sizeof(R2));
 		memset(R3, 0, sizeof(R3));
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		invTbl.clear();
 #endif
 		fp_addA_ = 0;
@@ -283,18 +305,20 @@ struct Op {
 		fp_negA_ = 0;
 		fp_mulA_ = 0;
 		fp_sqrA_ = 0;
+		fp_mul2A_ = 0;
+		fp_mul9A_ = 0;
 		fp2_addA_ = 0;
 		fp2_subA_ = 0;
 		fp2_negA_ = 0;
 		fp2_mulA_ = 0;
 		fp2_sqrA_ = 0;
+		fp2_mul2A_ = 0;
 		fpDbl_addA_ = 0;
 		fpDbl_subA_ = 0;
-		fpDbl_mulPreA_ = 0;
-		fpDbl_sqrPreA_ = 0;
 		fpDbl_modA_ = 0;
 		fp2Dbl_mulPreA_ = 0;
 		fp2Dbl_sqrPreA_ = 0;
+		fp2Dbl_mul_xiA_ = 0;
 		maxN = 0;
 		N = 0;
 		bitSize = 0;
@@ -307,6 +331,7 @@ struct Op {
 		fp_sub = 0;
 		fp_mul = 0;
 		fp_sqr = 0;
+		fp_mul2 = 0;
 		fp_invOp = 0;
 		fp_mulUnit = 0;
 
@@ -363,13 +388,14 @@ private:
 
 inline const char* getIoSeparator(int ioMode)
 {
-	return (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr)) ? "" : " ";
+	return (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr | IoEcAffineSerialize)) ? "" : " ";
 }
 
-inline void dump(const char *s, size_t n)
+inline void dump(const void *buf, size_t n)
 {
+	const uint8_t *s = (const uint8_t *)buf;
 	for (size_t i = 0; i < n; i++) {
-		printf("%02x ", (uint8_t)s[i]);
+		printf("%02x ", s[i]);
 	}
 	printf("\n");
 }

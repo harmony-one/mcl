@@ -84,12 +84,39 @@ struct Operator : public E {
 	{
 		powArray(z, x, gmp::getUnit(y), gmp::getUnitSize(y), y < 0, true);
 	}
-	static void setPowArrayGLV(void f(T& z, const T& x, const Unit *y, size_t yn, bool isNegative, bool constTime))
+	static void setPowArrayGLV(void f(T& z, const T& x, const Unit *y, size_t yn, bool isNegative, bool constTime), size_t g(T& z, const T *xVec, const mpz_class *yVec, size_t n) = 0)
 	{
 		powArrayGLV = f;
+		powVecNGLV = g;
+	}
+	static const size_t powVecMaxN = 16;
+	template<class tag, size_t maxBitSize, template<class _tag, size_t _maxBitSize>class FpT>
+	static void powVec(T& z, const T* xVec, const FpT<tag, maxBitSize> *yVec, size_t n)
+	{
+		assert(powVecNGLV);
+		T r;
+		r.setOne();
+		const size_t N = mcl::fp::maxMulVecNGLV;
+		mpz_class myVec[N];
+		while (n > 0) {
+			T t;
+			size_t tn = fp::min_(n, N);
+			for (size_t i = 0; i < tn; i++) {
+				bool b;
+				yVec[i].getMpz(&b, myVec[i]);
+				assert(b); (void)b;
+			}
+			size_t done = powVecNGLV(t, xVec, myVec, tn);
+			r *= t;
+			xVec += done;
+			yVec += done;
+			n -= done;
+		}
+		z = r;
 	}
 private:
 	static void (*powArrayGLV)(T& z, const T& x, const Unit *y, size_t yn, bool isNegative, bool constTime);
+	static size_t (*powVecNGLV)(T& z, const T* xVec, const mpz_class *yVec, size_t n);
 	static void powArray(T& z, const T& x, const Unit *y, size_t yn, bool isNegative, bool constTime)
 	{
 		if (powArrayGLV && (constTime || yn > 1)) {
@@ -116,6 +143,9 @@ private:
 
 template<class T, class E>
 void (*Operator<T, E>::powArrayGLV)(T& z, const T& x, const Unit *y, size_t yn, bool isNegative, bool constTime);
+
+template<class T, class E>
+size_t (*Operator<T, E>::powVecNGLV)(T& z, const T* xVec, const mpz_class *yVec, size_t n);
 
 /*
 	T must have save and load
@@ -154,6 +184,20 @@ struct Serializable : public E {
 		getStr(str, ioMode);
 		return str;
 	}
+	std::string serializeToHexStr() const
+	{
+		std::string str(sizeof(T) * 2, 0);
+		size_t n = serialize(&str[0], str.size(), IoSerializeHexStr);
+		str.resize(n);
+		return str;
+	}
+#ifndef CYBOZU_DONT_USE_EXCEPTION
+	void deserializeHexStr(const std::string& str)
+	{
+		size_t n = deserialize(str.c_str(), str.size(), IoSerializeHexStr);
+		if (n == 0) throw cybozu::Exception("bad str") << str;
+	}
+#endif
 #endif
 	// return written bytes
 	size_t serialize(void *buf, size_t maxBufSize, int ioMode = IoSerialize) const

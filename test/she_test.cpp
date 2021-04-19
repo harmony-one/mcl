@@ -43,6 +43,10 @@ double clk2msec(const cybozu::CpuClock& clk, int n)
 
 CYBOZU_TEST_AUTO(bench2)
 {
+#ifndef NDEBUG
+	puts("skip bench2 in debug");
+	return;
+#endif
 	puts("msec");
 	setTryNum(1 << 16);
 	useDecG1ViaGT(true);
@@ -331,6 +335,46 @@ CYBOZU_TEST_AUTO(ZkpBinEq)
 	ZkpBinEqTest(sec, ppub);
 }
 
+CYBOZU_TEST_AUTO(ZkpDecG1)
+{
+	const SecretKey& sec = g_sec;
+	PublicKey pub;
+	sec.getPublicKey(pub);
+	CipherTextG1 c;
+	int m = 123;
+	pub.enc(c, m);
+	ZkpDec zkp;
+	CYBOZU_TEST_EQUAL(sec.decWithZkpDec(zkp, c, pub), m);
+	CYBOZU_TEST_ASSERT(pub.verify(c, m, zkp));
+	CYBOZU_TEST_ASSERT(!pub.verify(c, m + 1, zkp));
+	CipherTextG1 c2;
+	pub.enc(c2, m);
+	CYBOZU_TEST_ASSERT(!pub.verify(c2, m, zkp));
+	zkp.d_[0] += 1;
+	CYBOZU_TEST_ASSERT(!pub.verify(c, m, zkp));
+}
+
+CYBOZU_TEST_AUTO(ZkpDecGT)
+{
+	const SecretKey& sec = g_sec;
+	PublicKey pub;
+	sec.getPublicKey(pub);
+	AuxiliaryForZkpDecGT aux;
+	pub.getAuxiliaryForZkpDecGT(aux);
+	CipherTextGT c;
+	int m = 123;
+	pub.enc(c, m);
+	ZkpDecGT zkp;
+	CYBOZU_TEST_EQUAL(sec.decWithZkpDec(zkp, c, aux), m);
+	CYBOZU_TEST_ASSERT(aux.verify(c, m, zkp));
+	CYBOZU_TEST_ASSERT(!aux.verify(c, m + 1, zkp));
+	CipherTextGT c2;
+	pub.enc(c2, m);
+	CYBOZU_TEST_ASSERT(!aux.verify(c2, m, zkp));
+	zkp.d_[0] += 1;
+	CYBOZU_TEST_ASSERT(!aux.verify(c, m, zkp));
+}
+
 CYBOZU_TEST_AUTO(add_sub_mul)
 {
 	const SecretKey& sec = g_sec;
@@ -531,7 +575,7 @@ CYBOZU_TEST_AUTO(io)
 	}
 }
 
-#ifndef PAPER
+#if !defined(PAPER) && defined(NDEBUG)
 CYBOZU_TEST_AUTO(bench)
 {
 	const SecretKey& sec = g_sec;
@@ -586,7 +630,7 @@ void decBench(const char *msg, int C, const SecretKey& sec, const PublicKey& pub
 	}
 }
 
-#ifndef PAPER
+#if !defined(PAPER) && defined(NDEBUG)
 CYBOZU_TEST_AUTO(hashBench)
 {
 	SecretKey& sec = g_sec;
@@ -666,9 +710,9 @@ CYBOZU_TEST_AUTO(hashBench)
 	CYBOZU_BENCH_C("finalExp", C, finalExp, e, e);
 	CYBOZU_BENCH_C("precomML", C, precomputedMillerLoop, e, P, SHE::Qcoeff_);
 
-	CipherTextG1 c1;
-	CipherTextG2 c2;
-	CipherTextGT ct;
+	CipherTextG1 c1, c11;
+	CipherTextG2 c2, c21;
+	CipherTextGT ct, ct1;
 
 	int m = int(hashSize - 1);
 	printf("small m = %d\n", m);
@@ -695,9 +739,12 @@ CYBOZU_TEST_AUTO(hashBench)
 	CYBOZU_BENCH_C("CT:mulML", C, CipherTextGT::mulML, ct, c1, c2);
 	CYBOZU_BENCH_C("CT:finalExp", C, CipherTextGT::finalExp, ct, ct);
 
-	CYBOZU_BENCH_C("addG1   ", C, CipherTextG1::add, c1, c1, c1);
-	CYBOZU_BENCH_C("addG2   ", C, CipherTextG2::add, c2, c2, c2);
-	CYBOZU_BENCH_C("addGT   ", C, CipherTextGT::add, ct, ct, ct);
+	c11 = c1;
+	c21 = c2;
+	ct1 = ct;
+	CYBOZU_BENCH_C("addG1   ", C, CipherTextG1::add, c1, c1, c11);
+	CYBOZU_BENCH_C("addG2   ", C, CipherTextG2::add, c2, c2, c21);
+	CYBOZU_BENCH_C("addGT   ", C, CipherTextGT::add, ct, ct, ct1);
 	CYBOZU_BENCH_C("reRandG1", C, pub.reRand, c1);
 	CYBOZU_BENCH_C("reRandG2", C, pub.reRand, c2);
 	CYBOZU_BENCH_C("reRandGT", C, pub.reRand, ct);
@@ -716,8 +763,9 @@ CYBOZU_TEST_AUTO(hashBench)
 CYBOZU_TEST_AUTO(liftedElGamal)
 {
 	const size_t hashSize = 1024;
-	initG1only(mcl::ecparam::secp192k1, hashSize);
-	const size_t byteSize = 192 / 8;
+	const mcl::EcParam& param = mcl::ecparam::secp256k1;
+	initG1only(param, hashSize);
+	const size_t byteSize = (param.bitSize + 7) / 8;
 	SecretKey sec;
 	sec.setByCSPRNG();
 	PublicKey pub;

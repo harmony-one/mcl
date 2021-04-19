@@ -13,6 +13,11 @@ typedef mcl::FpT<mcl::ZnTag, 521> Zn;
 typedef mcl::EcT<Fp> Ec;
 typedef mcl::ElgamalT<Ec, Zn> Elgamal;
 
+#if defined(__GNUC__) && !defined(__EMSCRIPTEN__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated"
+#endif
+
 /*
 	init system
 	@param param [in] string such as "ecParamName hashName"
@@ -29,11 +34,11 @@ void SystemInit(const std::string& param) throw(std::exception)
 	if (iss >> ecParamStr >> hashNameStr) {
 		Param& p = Param::getParam();
 		p.ecParam = mcl::getEcParam(ecParamStr);
-		Zn::init(p.ecParam->n);
-		Fp::init(p.ecParam->p);
-		Ec::init(p.ecParam->a, p.ecParam->b);
-		p.hashName = cybozu::crypto::Hash::getName(hashNameStr);
-		return;
+		if (p.ecParam) {
+			mcl::initCurve<Ec, Zn>(p.ecParam->curveType);
+			p.hashName = cybozu::crypto::Hash::getName(hashNameStr);
+			return;
+		}
 	}
 	throw cybozu::Exception("SystemInit:bad param") << param;
 }
@@ -145,3 +150,7 @@ public:
 		self_.clearCache();
 	}
 };
+
+#if defined(__GNUC__) && !defined(__EMSCRIPTEN__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

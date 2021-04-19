@@ -120,10 +120,27 @@ struct Code : public mcl::Generator {
 		ac = shl(zext(ac, 128), 32);
 		z = add(ac, ad);
 	}
+	void gen_multi3()
+	{
+		resetGlobalIdx();
+		Operand z(Int, unit2);
+		Operand x(Int, unit);
+		Operand y(Int, unit);
+		std::string name = "__multi3";
+		Function f(name, z, x, y);
+//		f.setPrivate();
+		verifyAndSetPrivate(f);
+		beginFunc(f);
+
+		gen_mul64x64(z, x, y);
+		ret(z);
+		endFunc();
+	}
 	void gen_mulUU()
 	{
 		if (wasm) {
 			gen_mul32x32();
+			gen_multi3();
 		}
 		resetGlobalIdx();
 		Operand z(Int, unit2);
@@ -235,7 +252,8 @@ struct Code : public mcl::Generator {
 		resetGlobalIdx();
 		Operand out(IntPtr, unit);
 		Operand px(IntPtr, unit);
-		mcl_fpDbl_mod_NIST_P192 = Function("mcl_fpDbl_mod_NIST_P192L" + suf, Void, out, px);
+		Operand dummy(IntPtr, unit);
+		mcl_fpDbl_mod_NIST_P192 = Function("mcl_fpDbl_mod_NIST_P192L" + suf, Void, out, px, dummy);
 		verifyAndSetPrivate(mcl_fpDbl_mod_NIST_P192);
 		beginFunc(mcl_fpDbl_mod_NIST_P192);
 
@@ -294,7 +312,8 @@ struct Code : public mcl::Generator {
 		const size_t mask = -(1 << rem);
 		const Operand py(IntPtr, unit);
 		const Operand px(IntPtr, unit);
-		Function f("mcl_fpDbl_mod_NIST_P521L" + suf, Void, py, px);
+		const Operand dummy(IntPtr, unit);
+		Function f("mcl_fpDbl_mod_NIST_P521L" + suf, Void, py, px, dummy);
 		verifyAndSetPrivate(f);
 		beginFunc(f);
 		Operand x = loadN(px, n * 2 + 1);
@@ -333,14 +352,15 @@ struct Code : public mcl::Generator {
 		resetGlobalIdx();
 		Operand py(IntPtr, unit);
 		Operand px(IntPtr, unit);
-		mcl_fp_sqr_NIST_P192 = Function("mcl_fp_sqr_NIST_P192L" + suf, Void, py, px);
+		Operand dummy(IntPtr, unit);
+		mcl_fp_sqr_NIST_P192 = Function("mcl_fp_sqr_NIST_P192L" + suf, Void, py, px, dummy);
 		verifyAndSetPrivate(mcl_fp_sqr_NIST_P192);
 		beginFunc(mcl_fp_sqr_NIST_P192);
 		Operand buf = alloca_(unit, 192 * 2 / unit);
 		// QQQ define later
 		Function mcl_fpDbl_sqrPre("mcl_fpDbl_sqrPre" + cybozu::itoa(192 / unit) + "L" + suf, Void, buf, px);
 		call(mcl_fpDbl_sqrPre, buf, px);
-		call(mcl_fpDbl_mod_NIST_P192, py, buf);
+		call(mcl_fpDbl_mod_NIST_P192, py, buf, buf/*dummy*/);
 		ret(Void);
 		endFunc();
 	}
@@ -350,14 +370,15 @@ struct Code : public mcl::Generator {
 		Operand pz(IntPtr, unit);
 		Operand px(IntPtr, unit);
 		Operand py(IntPtr, unit);
-		Function f("mcl_fp_mulNIST_P192L" + suf, Void, pz, px, py);
+		Operand dummy(IntPtr, unit);
+		Function f("mcl_fp_mulNIST_P192L" + suf, Void, pz, px, py, dummy);
 		verifyAndSetPrivate(f);
 		beginFunc(f);
 		Operand buf = alloca_(unit, 192 * 2 / unit);
 		// QQQ define later
 		Function mcl_fpDbl_mulPre("mcl_fpDbl_mulPre" + cybozu::itoa(192 / unit) + "L" + suf, Void, buf, px, py);
 		call(mcl_fpDbl_mulPre, buf, px, py);
-		call(mcl_fpDbl_mod_NIST_P192, pz, buf);
+		call(mcl_fpDbl_mod_NIST_P192, pz, buf, buf/*dummy*/);
 		ret(Void);
 		endFunc();
 	}
@@ -648,9 +669,10 @@ struct Code : public mcl::Generator {
 		Operand z(Int, bu);
 		Operand px(IntPtr, unit);
 		Operand y(Int, unit);
-		std::string name = "mulPv" + cybozu::itoa(bit) + "x" + cybozu::itoa(unit);
+		std::string name = "mulPv" + cybozu::itoa(bit) + "x" + cybozu::itoa(unit) + suf;
 		mulPvM[bit] = Function(name, z, px, y);
-		mulPvM[bit].setPrivate();
+		// workaround at https://github.com/herumi/mcl/pull/82
+//		mulPvM[bit].setPrivate();
 		verifyAndSetPrivate(mulPvM[bit]);
 		beginFunc(mulPvM[bit]);
 		OperandVec L(N), H(N);
@@ -693,11 +715,12 @@ struct Code : public mcl::Generator {
 			Operand z = mul(x, y);
 			storeN(z, pz);
 			ret(Void);
-		} else if (N >= 8 && (N % 2) == 0) {
+		} else if (N > 8 && (N % 2) == 0) {
 			/*
 				W = 1 << half
 				(aW + b)(cW + d) = acW^2 + (ad + bc)W + bd
 				ad + bc = (a + b)(c + d) - ac - bd
+				@note Karatsuba is slower for N = 8
 			*/
 			const int H = N / 2;
 			const int half = bit / 2;
@@ -861,37 +884,79 @@ struct Code : public mcl::Generator {
 		ret(Void);
 		endFunc();
 	}
-	void gen_mcl_fp_montRed()
+	// return [H:L]
+	Operand pack(Operand H, Operand L)
 	{
-		const int bu = bit + unit;
-		const int b2 = bit * 2;
-		const int b2u = b2 + unit;
+		int size = H.bit + L.bit;
+		H = zext(H, size);
+		H = shl(H, L.bit);
+		L = zext(L, size);
+		H = _or(H, L);
+		return H;
+	}
+	// split x to [ret:L] s.t. size of L = sizeL
+	Operand split(Operand *L, const Operand& x, int sizeL)
+	{
+		Operand ret = lshr(x, sizeL);
+		ret = trunc(ret, ret.bit - sizeL);
+		*L = trunc(x, sizeL);
+		return ret;
+	}
+	void gen_mcl_fp_montRed(bool isFullBit = true)
+	{
 		resetGlobalIdx();
 		Operand pz(IntPtr, unit);
 		Operand pxy(IntPtr, unit);
 		Operand pp(IntPtr, unit);
-		std::string name = "mcl_fp_montRed" + cybozu::itoa(N) + "L" + suf;
+		std::string name = "mcl_fp_montRed";
+		if (!isFullBit) {
+			name += "NF";
+		}
+		name += cybozu::itoa(N) + "L" + suf;
 		mcl_fp_montRedM[N] = Function(name, Void, pz, pxy, pp);
 		verifyAndSetPrivate(mcl_fp_montRedM[N]);
 		beginFunc(mcl_fp_montRedM[N]);
 		Operand rp = load(getelementptr(pp, -1));
 		Operand p = loadN(pp, N);
-		Operand xy = loadN(pxy, N * 2);
-		Operand t = zext(xy, b2 + unit);
+		const int bu = bit + unit;
+		const int bu2 = bit + unit * 2;
+		Operand t = loadN(pxy, N);
+		Operand H;
 		for (uint32_t i = 0; i < N; i++) {
-			Operand z = trunc(t, unit);
-			Operand q = mul(z, rp);
+			Operand q;
+			if (N == 1) {
+				q = mul(t, rp);
+			} else {
+				q = mul(trunc(t, unit), rp);
+			}
 			Operand pq = call(mulPvM[bit], pp, q);
-			pq = zext(pq, b2u - unit * i);
-			z = add(t, pq);
-			z = lshr(z, unit);
-			t = trunc(z, b2 - unit * i);
+			if (i > 0) {
+				H = zext(H, bu);
+				H = shl(H, bit);
+				pq = add(pq, H);
+			}
+			Operand next = load(getelementptr(pxy, N + i));
+			t = pack(next, t);
+			t = zext(t, bu2);
+			pq = zext(pq, bu2);
+			t = add(t, pq);
+			t = lshr(t, unit);
+			t = trunc(t, bu);
+			H = split(&t, t, bit);
 		}
-		p = zext(p, bu);
-		Operand vc = sub(t, p);
-		Operand c = trunc(lshr(vc, bit), 1);
-		Operand z = select(c, t, vc);
-		z = trunc(z, bit);
+		Operand z;
+		if (isFullBit) {
+			p = zext(p, bu);
+			t = zext(t, bu);
+			Operand vc = sub(t, p);
+			Operand c = trunc(lshr(vc, bit), 1);
+			z = select(c, t, vc);
+			z = trunc(z, bit);
+		} else {
+			Operand vc = sub(t, p);
+			Operand c = trunc(lshr(vc, bit - 1), 1);
+			z = select(c, t, vc);
+		}
 		storeN(z, pz);
 		ret(Void);
 		endFunc();
@@ -919,7 +984,8 @@ struct Code : public mcl::Generator {
 		gen_mcl_fpDbl_sqrPre();
 		gen_mcl_fp_mont(true);
 		gen_mcl_fp_mont(false);
-		gen_mcl_fp_montRed();
+		gen_mcl_fp_montRed(true);
+		gen_mcl_fp_montRed(false);
 	}
 	void setBit(uint32_t bit)
 	{
@@ -940,6 +1006,23 @@ struct Code : public mcl::Generator {
 		gen_mulUU();
 #else
 		gen_once();
+#if 1
+		int bitTbl[] = {
+			192,
+			224,
+			256,
+			384,
+			512
+		};
+		for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(bitTbl); i++) {
+			uint32_t bit = bitTbl[i];
+			if (unit == 64 && bit == 224) continue;
+			setBit(bit);
+			gen_mul();
+			gen_all();
+			gen_addsub();
+		}
+#else
 		uint32_t end = ((maxBitSize + unit - 1) / unit);
 		for (uint32_t n = 1; n <= end; n++) {
 			setBit(n * unit);
@@ -947,6 +1030,7 @@ struct Code : public mcl::Generator {
 			gen_all();
 			gen_addsub();
 		}
+#endif
 		if (unit == 64 && maxBitSize == 768) {
 			for (uint32_t i = maxBitSize + unit * 2; i <= maxBitSize * 2; i += unit * 2) {
 				setBit(i);
@@ -961,13 +1045,13 @@ int main(int argc, char *argv[])
 	try
 {
 	uint32_t unit;
-	bool oldLLVM;
+	int llvmVer;
 	bool wasm;
 	std::string suf;
 	std::string privateFile;
 	cybozu::Option opt;
 	opt.appendOpt(&unit, uint32_t(sizeof(void*)) * 8, "u", ": unit");
-	opt.appendBoolOpt(&oldLLVM, "old", ": old LLVM(before 3.8)");
+	opt.appendOpt(&llvmVer, 0x70, "ver", ": llvm version");
 	opt.appendBoolOpt(&wasm, "wasm", ": for wasm");
 	opt.appendOpt(&suf, "", "s", ": suffix of function name");
 	opt.appendOpt(&privateFile, "", "f", ": private function list file");
@@ -985,9 +1069,8 @@ int main(int argc, char *argv[])
 		}
 	}
 	Code c;
-	if (oldLLVM) {
-		c.setOldLLVM();
-	}
+	fprintf(stderr, "llvmVer=0x%02x\n", llvmVer);
+	c.setLlvmVer(llvmVer);
 	c.wasm = wasm;
 	c.setUnit(unit);
 	uint32_t maxBitSize = MCL_MAX_BIT_SIZE;

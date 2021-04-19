@@ -90,35 +90,19 @@ inline uint32_t mulUnit(uint32_t *pH, uint32_t x, uint32_t y)
 inline uint64_t mulUnit(uint64_t *pH, uint64_t x, uint64_t y)
 {
 #ifdef MCL_VINT_64BIT_PORTABLE
-	uint32_t a = uint32_t(x >> 32);
-	uint32_t b = uint32_t(x);
-	uint32_t c = uint32_t(y >> 32);
-	uint32_t d = uint32_t(y);
-
-	uint64_t ad = uint64_t(d) * a;
-	uint64_t bd = uint64_t(d) * b;
-	uint64_t L = uint32_t(bd);
-	ad += bd >> 32; // [ad:L]
-
-	uint64_t ac = uint64_t(c) * a;
-	uint64_t bc = uint64_t(c) * b;
-	uint64_t H = uint32_t(bc);
-	ac += bc >> 32; // [ac:H]
-	/*
-		  adL
-		 acH
-	*/
-	uint64_t t = (ac << 32) | H;
-	ac >>= 32;
-	H = t + ad;
-	if (H < t) {
-		ac++;
-	}
-	/*
-		ac:H:L
-	*/
+	const uint64_t mask = 0xffffffff;
+	uint64_t v = (x & mask) * (y & mask);
+	uint64_t L = uint32_t(v);
+	uint64_t H = v >> 32;
+	uint64_t ad = (x & mask) * uint32_t(y >> 32);
+	uint64_t bc = uint32_t(x >> 32) * (y & mask);
+	H += uint32_t(ad);
+	H += uint32_t(bc);
 	L |= H << 32;
-	H = (ac << 32) | uint32_t(H >> 32);
+	H >>= 32;
+	H += ad >> 32;
+	H += bc >> 32;
+	H += (x >> 32) * (y >> 32);
 	*pH = H;
 	return L;
 #elif defined(_WIN64) && !defined(__INTEL_COMPILER)
@@ -150,7 +134,7 @@ inline uint32_t divUnit(uint32_t *pr, uint32_t H, uint32_t L, uint32_t y)
 #if MCL_SIZEOF_UNIT == 8
 inline uint64_t divUnit(uint64_t *pr, uint64_t H, uint64_t L, uint64_t y)
 {
-#if defined(MCL_VINT_64BIT_PORTABLE)
+#if defined(MCL_VINT_64BIT_PORTABLE) || (defined(_MSC_VER) && _MSC_VER < 1920)
 	uint32_t px[4] = { uint32_t(L), uint32_t(L >> 32), uint32_t(H), uint32_t(H >> 32) };
 	uint32_t py[2] = { uint32_t(y), uint32_t(y >> 32) };
 	size_t xn = 4;
@@ -162,7 +146,7 @@ inline uint64_t divUnit(uint64_t *pr, uint64_t H, uint64_t L, uint64_t y)
 	*pr = make64(r[1], r[0]);
 	return make64(q[1], q[0]);
 #elif defined(_MSC_VER)
-	#error "divUnit for uint64_t is not supported"
+	return _udiv128(H, L, y, pr);
 #else
 	typedef __attribute__((mode(TI))) unsigned int uint128;
 	uint128 t = (uint128(H) << 64) | L;
@@ -213,14 +197,11 @@ T addN(T *z, const T *x, const T *y, size_t n)
 	T c = 0;
 	for (size_t i = 0; i < n; i++) {
 		T xc = x[i] + c;
-		if (xc < c) {
-			// x[i] = Unit(-1) and c = 1
-			z[i] = y[i];
-		} else {
-			xc += y[i];
-			c = y[i] > xc ? 1 : 0;
-			z[i] = xc;
-		}
+		c = xc < c;
+		T yi = y[i];
+		xc += yi;
+		c += xc < yi;
+		z[i] = xc;
 	}
 	return c;
 }
@@ -301,14 +282,12 @@ T subN(T *z, const T *x, const T *y, size_t n)
 	assert(n > 0);
 	T c = 0;
 	for (size_t i = 0; i < n; i++) {
-		T yc = y[i] + c;
-		if (yc < c) {
-			// y[i] = T(-1) and c = 1
-			z[i] = x[i];
-		} else {
-			c = x[i] < yc ? 1 : 0;
-			z[i] = x[i] - yc;
-		}
+		T yi = y[i];
+		yi += c;
+		c = yi < c;
+		T xi = x[i];
+		c += xi < yi;
+		z[i] = xi - yi;
 	}
 	return c;
 }
@@ -550,15 +529,6 @@ size_t getRealSize(const T *x, size_t xn)
 		}
 	}
 	return 1;
-}
-
-template<class T>
-size_t getBitSize(const T *x, size_t n)
-{
-	if (n == 1 && x[0] == 0) return 1;
-	T v = x[n - 1];
-	assert(v);
-	return (n - 1) * sizeof(T) * 8 + 1 + cybozu::bsr<Unit>(v);
 }
 
 /*
@@ -1755,6 +1725,46 @@ public:
 	static void invMod(VintT& y, const VintT& x, const VintT& m)
 	{
 		assert(!x.isZero() && !m.isZero());
+#if 0
+		VintT u = x;
+		VintT v = m;
+		VintT x1 = 1, x2 = 0;
+		VintT t;
+		while (u != 1 && v != 1) {
+			while (u.isEven()) {
+				u >>= 1;
+				if (x1.isOdd()) {
+					x1 += m;
+				}
+				x1 >>= 1;
+			}
+			while (v.isEven()) {
+				v >>= 1;
+				if (x2.isOdd()) {
+					x2 += m;
+				}
+				x2 >>= 1;
+			}
+			if (u >= v) {
+				u -= v;
+				x1 -= x2;
+				if (x1 < 0) {
+					x1 += m;
+				}
+			} else {
+				v -= u;
+				x2 -= x1;
+				if (x2 < 0) {
+					x2 += m;
+				}
+			}
+		}
+		if (u == 1) {
+			y = x1;
+		} else {
+			y = x2;
+		}
+#else
 		if (x == 1) {
 			y = 1;
 			return;
@@ -1787,6 +1797,7 @@ public:
 			}
 			b -= a * q;
 		}
+#endif
 	}
 	/*
 		Miller-Rabin

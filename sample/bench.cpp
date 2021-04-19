@@ -68,7 +68,7 @@ void benchFp(size_t bitSize, int mode)
 		if (mode & 4) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_LLVM);
 		if (mode & 8) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_LLVM_MONT);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		if (mode & 16) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_XBYAK);
 #endif
 	}
@@ -76,12 +76,8 @@ void benchFp(size_t bitSize, int mode)
 
 void benchEcSub(const mcl::EcParam& para, mcl::fp::Mode mode, mcl::ec::Mode ecMode)
 {
-	Fp::init(para.p, mode);
-	Zn::init(para.n);
-	Ec::init(para.a, para.b, ecMode);
-	Fp x(para.gx);
-	Fp y(para.gy);
-	Ec P(x, y);
+	Ec P;
+	mcl::initCurve<Ec, Zn>(para.curveType, &P, mode, ecMode);
 	Ec P2; Ec::add(P2, P, P);
 	Ec Q = P + P + P;
 	double addT, add2T, subT, dblT, mulT, mulCTT, mulRandT, mulCTRandT, normT;
@@ -126,7 +122,7 @@ void benchEc(size_t bitSize, int mode, mcl::ec::Mode ecMode)
 		if (mode & 4) benchEcSub(tbl[i], mcl::fp::FP_LLVM, ecMode);
 		if (mode & 8) benchEcSub(tbl[i], mcl::fp::FP_LLVM_MONT, ecMode);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		if (mode & 16) benchEcSub(tbl[i], mcl::fp::FP_XBYAK, ecMode);
 #endif
 	}

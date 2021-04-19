@@ -378,6 +378,10 @@ void testIo()
 void benchFp2()
 {
 	puts(__FUNCTION__);
+#ifndef NDEBUG
+	puts("skip bench in debug");
+	return;
+#endif
 	Fp2 x, y;
 	x.a.setStr("4");
 	x.b.setStr("464652165165");
@@ -400,8 +404,11 @@ void test(const char *p, mcl::fp::Mode mode)
 {
 	const int xi_a = 1;
 	Fp::init(xi_a, p, mode);
+	if (Fp::getOp().isFullBit) return;
+	bool b;
+	Fp2::init(&b);
+	if (!b) return;
 	printf("mode=%s\n", mcl::fp::ModeToStr(mode));
-	Fp2::init();
 	printf("bitSize=%d\n", (int)Fp::getBitSize());
 #if 0
 	if (Fp::getBitSize() > 256) {
@@ -423,17 +430,7 @@ void test(const char *p, mcl::fp::Mode mode)
 void testAll()
 {
 	const char *tbl[] = {
-		// N = 2
-		"0x0000000000000001000000000000000d",
-		"0x7fffffffffffffffffffffffffffffff",
-		"0x8000000000000000000000000000001d",
-		"0xffffffffffffffffffffffffffffff61",
-
 		// N = 3
-		"0x000000000000000100000000000000000000000000000033", // min prime
-		"0x00000000fffffffffffffffffffffffffffffffeffffac73",
-		"0x0000000100000000000000000001b8fa16dfab9aca16b6b3",
-		"0x000000010000000000000000000000000000000000000007",
 		"0x30000000000000000000000000000000000000000000002b",
 		"0x70000000000000000000000000000000000000000000001f",
 		"0x800000000000000000000000000000000000000000000005",
@@ -446,11 +443,15 @@ void testAll()
 		"0x0000000000000001000000000000000000000000000000000000000000000085", // min prime
 		"0x2523648240000001ba344d80000000086121000000000013a700000000000013",
 		"0x7523648240000001ba344d80000000086121000000000013a700000000000017",
+		// max prime less than 2**256/4
+		"0x3fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0b",
 		"0x800000000000000000000000000000000000000000000000000000000000005f",
 		"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43", // max prime
 #if MCL_MAX_BIT_SIZE >= 384
 		// N = 6
 		"0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab",
+		// max prime less than 2**384/4
+		"0x3fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff97",
 		"0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff",
 #endif
 #if MCL_MAX_BIT_SIZE >= 768
@@ -465,7 +466,7 @@ void testAll()
 		test(p, mcl::fp::FP_LLVM);
 		test(p, mcl::fp::FP_LLVM_MONT);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		test(p, mcl::fp::FP_XBYAK);
 #endif
 	}

@@ -3,49 +3,48 @@
 */
 #include <iostream>
 #include <fstream>
-#include <cybozu/random_generator.hpp>
-#include <mcl/fp.hpp>
-#include <mcl/ecparam.hpp>
+#include <mcl/ec.hpp>
 
-typedef mcl::FpT<> Fp;
-typedef mcl::FpT<mcl::ZnTag> Zn;
+typedef mcl::FpT<mcl::FpTag, 256> Fp;
+typedef mcl::FpT<mcl::ZnTag, 256> Fr;
 typedef mcl::EcT<Fp> Ec;
+
+void put(const char *msg, const Ec& P)
+{
+	std::cout << msg << P.getStr(mcl::IoEcAffine | 16) << std::endl;
+}
 
 int main()
 {
-	cybozu::RandomGenerator rg;
 	/*
-		system setup with a parameter secp192k1 recommended by SECG
 		Ec is an elliptic curve over Fp
-		the cyclic group of <P> is isomorphic to Zn
+		the cyclic group of <P> is isomorphic to Fr
 	*/
-	const mcl::EcParam& para = mcl::ecparam::secp192k1;
-	Zn::init(para.n);
-	Fp::init(para.p);
-	Ec::init(para.a, para.b);
-	const Ec P(Fp(para.gx), Fp(para.gy));
+	Ec P;
+	mcl::initCurve<Ec, Fr>(MCL_SECP256K1, &P);
+	put("P=", P);
 
 	/*
 		Alice setups a private key a and public key aP
 	*/
-	Zn a;
+	Fr a;
 	Ec aP;
 
-	a.setRand(rg);
+	a.setByCSPRNG();
 	Ec::mul(aP, P, a); // aP = a * P;
 
-	std::cout << "aP=" << aP << std::endl;
+	put("aP=", aP);
 
 	/*
 		Bob setups a private key b and public key bP
 	*/
-	Zn b;
+	Fr b;
 	Ec bP;
 
-	b.setRand(rg);
+	b.setByCSPRNG();
 	Ec::mul(bP, P, b); // bP = b * P;
 
-	std::cout << "bP=" << bP << std::endl;
+	put("bP=", bP);
 
 	Ec abP, baP;
 

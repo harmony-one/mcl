@@ -2,14 +2,19 @@ include common.mk
 LIB_DIR=lib
 OBJ_DIR=obj
 EXE_DIR=bin
-SRC_SRC=fp.cpp bn_c256.cpp bn_c384.cpp bn_c512.cpp she_c256.cpp
-TEST_SRC=fp_test.cpp ec_test.cpp fp_util_test.cpp window_method_test.cpp elgamal_test.cpp fp_tower_test.cpp gmp_test.cpp bn_test.cpp bn384_test.cpp glv_test.cpp paillier_test.cpp she_test.cpp vint_test.cpp bn512_test.cpp ecdsa_test.cpp conversion_test.cpp
+SRC_SRC=fp.cpp bn_c256.cpp bn_c384.cpp bn_c384_256.cpp bn_c512.cpp she_c256.cpp
+TEST_SRC=fp_test.cpp ec_test.cpp fp_util_test.cpp window_method_test.cpp elgamal_test.cpp fp_tower_test.cpp gmp_test.cpp bn_test.cpp bn384_test.cpp glv_test.cpp paillier_test.cpp she_test.cpp vint_test.cpp bn512_test.cpp conversion_test.cpp
 TEST_SRC+=bn_c256_test.cpp bn_c384_test.cpp bn_c384_256_test.cpp bn_c512_test.cpp
 TEST_SRC+=she_c256_test.cpp she_c384_test.cpp she_c384_256_test.cpp
 TEST_SRC+=aggregate_sig_test.cpp array_test.cpp
 TEST_SRC+=bls12_test.cpp
-TEST_SRC+=ecdsa_c_test.cpp
+TEST_SRC+=mapto_wb19_test.cpp
 TEST_SRC+=modp_test.cpp
+LIB_OBJ=$(OBJ_DIR)/fp.o
+ifeq ($(MCL_STATIC_CODE),1)
+  LIB_OBJ+=obj/static_code.o
+  TEST_SRC=bls12_test.cpp
+endif
 ifeq ($(CPU),x86-64)
   MCL_USE_XBYAK?=1
   TEST_SRC+=mont_fp_test.cpp sq_test.cpp
@@ -27,6 +32,13 @@ ifneq ($(MCL_MAX_BIT_SIZE),)
 endif
 ifeq ($(MCL_USE_XBYAK),0)
   CFLAGS+=-DMCL_DONT_USE_XBYAK
+endif
+ifeq ($(MCL_USE_PROF),1)
+  CFLAGS+=-DMCL_USE_PROF
+endif
+ifeq ($(MCL_USE_PROF),2)
+  CFLAGS+=-DMCL_USE_PROF -DXBYAK_USE_VTUNE -I /opt/intel/vtune_amplifier/include/
+  LDFLAGS+=-L /opt/intel/vtune_amplifier/lib64 -ljitprofiling -ldl
 endif
 ##################################################################
 MCL_LIB=$(LIB_DIR)/libmcl.a
@@ -53,20 +65,19 @@ SHE384_LIB=$(LIB_DIR)/libmclshe384.a
 SHE384_SLIB=$(LIB_DIR)/lib$(SHE384_SNAME).$(LIB_SUF)
 SHE384_256_LIB=$(LIB_DIR)/libmclshe384_256.a
 SHE384_256_SLIB=$(LIB_DIR)/lib$(SHE384_256_SNAME).$(LIB_SUF)
-ECDSA_LIB=$(LIB_DIR)/libmclecdsa.a
 SHE_LIB_ALL=$(SHE256_LIB) $(SHE256_SLIB) $(SHE384_LIB) $(SHE384_SLIB) $(SHE384_256_LIB) $(SHE384_256_SLIB)
-all: $(MCL_LIB) $(MCL_SLIB) $(BN256_LIB) $(BN256_SLIB) $(BN384_LIB) $(BN384_SLIB) $(BN384_256_LIB) $(BN384_256_SLIB) $(BN512_LIB) $(BN512_SLIB) $(SHE_LIB_ALL) $(ECDSA_LIB)
+all: $(MCL_LIB) $(MCL_SLIB) $(BN256_LIB) $(BN256_SLIB) $(BN384_LIB) $(BN384_SLIB) $(BN384_256_LIB) $(BN384_256_SLIB) $(BN512_LIB) $(BN512_SLIB) $(SHE_LIB_ALL)
 
 #LLVM_VER=-3.8
 LLVM_LLC=llc$(LLVM_VER)
 LLVM_OPT=opt$(LLVM_VER)
-LLVM_OPT_VERSION=$(shell $(LLVM_OPT) --version 2>/dev/null | awk '/version/ {print $$3}')
+LLVM_OPT_VERSION=$(shell $(LLVM_OPT) --version 2>/dev/null | awk '/version/ { split($$3,a,"."); print a[1]}')
 GEN_EXE=src/gen
 GEN_EXE_OPT=-u $(BIT)
 # incompatibility between llvm 3.4 and the later version
 ifneq ($(LLVM_OPT_VERSION),)
-ifeq ($(shell expr $(LLVM_OPT_VERSION) \< 3.5.0),1)
-  GEN_EXE_OPT+=-old
+ifeq ($(shell expr $(LLVM_OPT_VERSION) \>= 9),1)
+  GEN_EXE_OPT+=-ver 0x90
 endif
 endif
 ifeq ($(OS),mac)
@@ -78,7 +89,10 @@ ifneq ($(CPU),)
   ASM_SRC=$(ASM_SRC_PATH_NAME).s
 endif
 ASM_OBJ=$(OBJ_DIR)/$(CPU).o
-LIB_OBJ=$(OBJ_DIR)/fp.o
+ifeq ($(OS),mac-m1)
+  ASM_SRC=src/base64.ll
+  ASM_OBJ=$(OBJ_DIR)/base64.o
+endif
 BN256_OBJ=$(OBJ_DIR)/bn_c256.o
 BN384_OBJ=$(OBJ_DIR)/bn_c384.o
 BN384_256_OBJ=$(OBJ_DIR)/bn_c384_256.o
@@ -86,7 +100,6 @@ BN512_OBJ=$(OBJ_DIR)/bn_c512.o
 SHE256_OBJ=$(OBJ_DIR)/she_c256.o
 SHE384_OBJ=$(OBJ_DIR)/she_c384.o
 SHE384_256_OBJ=$(OBJ_DIR)/she_c384_256.o
-ECDSA_OBJ=$(OBJ_DIR)/ecdsa_c.o
 FUNC_LIST=src/func.list
 ifeq ($(findstring $(OS),mingw64/cygwin),)
   MCL_USE_LLVM?=1
@@ -98,7 +111,9 @@ ifeq ($(MCL_USE_LLVM),1)
   LIB_OBJ+=$(ASM_OBJ)
   # special case for intel with bmi2
   ifeq ($(INTEL),1)
-    LIB_OBJ+=$(OBJ_DIR)/$(CPU).bmi2.o
+    ifneq ($(MCL_STATIC_CODE),1)
+      LIB_OBJ+=$(OBJ_DIR)/$(CPU).bmi2.o
+    endif
   endif
 endif
 LLVM_SRC=src/base$(BIT).ll
@@ -173,9 +188,6 @@ $(SHE384_SLIB): $(SHE384_OBJ) $(MCL_LIB)
 $(SHE384_256_SLIB): $(SHE384_256_OBJ) $(MCL_LIB)
 	$(PRE)$(CXX) -o $@ $(SHE384_256_OBJ) $(MCL_LIB) -shared $(LDFLAGS) $(SHE384_256_SLIB_LDFLAGS)
 
-$(ECDSA_LIB): $(ECDSA_OBJ)
-	$(AR) $@ $(ECDSA_OBJ)
-
 $(BN256_SLIB): $(BN256_OBJ) $(MCL_SLIB)
 	$(PRE)$(CXX) -o $@ $(BN256_OBJ) -shared $(LDFLAGS) $(BN256_SLIB_LDFLAGS)
 
@@ -227,8 +239,20 @@ else
 endif
 
 $(GEN_EXE): src/gen.cpp src/llvm_gen.hpp
-	$(CXX) -o $@ $< $(CFLAGS)
+	$(CXX) -o $@ $< $(CFLAGS) -DMCL_USE_VINT -DMCL_VINT_FIXED_BUFFER
 
+src/dump_code: src/dump_code.cpp src/fp.cpp src/fp_generator.hpp
+	$(CXX) -o $@ src/dump_code.cpp src/fp.cpp -g -I include -DMCL_DUMP_JIT -DMCL_MAX_BIT_SIZE=384 -DMCL_DONT_USE_OPENSSL -DMCL_USE_VINT -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_FIXED_BUFFER
+
+src/static_code.asm: src/dump_code
+	$< > $@
+
+obj/static_code.o: src/static_code.asm
+	nasm $(NASM_ELF_OPT) -o $@ $<
+
+bin/static_code_test.exe: test/static_code_test.cpp src/fp.cpp obj/static_code.o
+	$(CXX) -o $@ -O3 $^ -g -DMCL_DONT_USE_XBYAK -DMCL_STATIC_CODE -DMCL_MAX_BIT_SIZE=384 -DMCL_DONT_USE_OPENSSL -DMCL_USE_VINT -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_FIXED_BUFFER -I include -Wall -Wextra
+ 
 asm: $(LLVM_SRC)
 	$(LLVM_OPT) -O3 -o - $(LLVM_SRC) | $(LLVM_LLC) -O3 $(LLVM_FLAGS) -x86-asm-syntax=intel
 
@@ -287,8 +311,8 @@ $(EXE_DIR)/bn_c384_256_test.exe: $(OBJ_DIR)/bn_c384_256_test.o $(BN384_256_LIB) 
 $(EXE_DIR)/bn_c512_test.exe: $(OBJ_DIR)/bn_c512_test.o $(BN512_LIB) $(MCL_LIB)
 	$(PRE)$(CXX) $< -o $@ $(BN512_LIB) $(MCL_LIB) $(LDFLAGS)
 
-$(EXE_DIR)/pairing_c.exe: $(OBJ_DIR)/pairing_c.o $(BN256_LIB) $(MCL_LIB)
-	$(PRE)$(CC) $< -o $@ $(BN256_LIB) $(MCL_LIB) $(LDFLAGS) -lstdc++
+$(EXE_DIR)/pairing_c.exe: $(OBJ_DIR)/pairing_c.o $(BN384_256_LIB) $(MCL_LIB)
+	$(PRE)$(CC) $< -o $@ $(BN384_256_LIB) $(MCL_LIB) $(LDFLAGS) -lstdc++
 
 $(EXE_DIR)/she_c256_test.exe: $(OBJ_DIR)/she_c256_test.o $(SHE256_LIB) $(MCL_LIB)
 	$(PRE)$(CXX) $< -o $@ $(SHE256_LIB) $(MCL_LIB) $(LDFLAGS)
@@ -298,9 +322,6 @@ $(EXE_DIR)/she_c384_test.exe: $(OBJ_DIR)/she_c384_test.o $(SHE384_LIB) $(MCL_LIB
 
 $(EXE_DIR)/she_c384_256_test.exe: $(OBJ_DIR)/she_c384_256_test.o $(SHE384_256_LIB) $(MCL_LIB)
 	$(PRE)$(CXX) $< -o $@ $(SHE384_256_LIB) $(MCL_LIB) $(LDFLAGS)
-
-$(EXE_DIR)/ecdsa_c_test.exe: $(OBJ_DIR)/ecdsa_c_test.o $(ECDSA_LIB) $(MCL_LIB) src/ecdsa_c.cpp include/mcl/ecdsa.hpp include/mcl/ecdsa.h
-	$(PRE)$(CXX) $< -o $@ $(ECDSA_LIB) $(MCL_LIB) $(LDFLAGS)
 
 $(OBJ_DIR)/modp_test.o: test/modp_test.cpp
 	$(PRE)$(CXX) -c $< -o $@ -MMD -MP -MF $(@:.o=.d) -DMCL_USE_VINT -DMCL_MAX_BIT_SIZE=384 -DMCL_VINT_64BIT_PORTABLE -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_FIXED_BUFFER -I./include -O2 $(CFLAGS_WARN)
@@ -313,7 +334,7 @@ sample: $(SAMPLE_EXE) $(MCL_LIB)
 
 TEST_EXE=$(addprefix $(EXE_DIR)/,$(TEST_SRC:.cpp=.exe))
 test_ci: $(TEST_EXE)
-	@sh -ec 'for i in $(TEST_EXE); do echo $$i; env LSAN_OPTIONS=verbosity=1:log_threads=1 $$i; done'
+	@sh -ec 'for i in $(TEST_EXE); do echo $$i; env LSAN_OPTIONS=verbosity=0:log_threads=1 $$i; done'
 test: $(TEST_EXE)
 	@echo test $(TEST_EXE)
 	@sh -ec 'for i in $(TEST_EXE); do $$i|grep "ctest:name"; done' > result.txt
@@ -321,7 +342,7 @@ test: $(TEST_EXE)
 
 EMCC_OPT=-I./include -I./src -Wall -Wextra
 EMCC_OPT+=-O3 -DNDEBUG -DMCLSHE_WIN_SIZE=8
-EMCC_OPT+=-s WASM=1 -s NO_EXIT_RUNTIME=1 -s MODULARIZE=1 #-s ASSERTIONS=1
+EMCC_OPT+=-s WASM=1 -s NO_EXIT_RUNTIME=1 -s NODEJS_CATCH_EXIT=0 -s NODEJS_CATCH_REJECTION=0  -s MODULARIZE=1 #-s ASSERTIONS=1
 EMCC_OPT+=-DCYBOZU_MINIMUM_EXCEPTION
 EMCC_OPT+=-s ABORTING_MALLOC=0
 SHE_C_DEP=src/fp.cpp src/she_c_impl.hpp include/mcl/she.hpp include/mcl/fp.hpp include/mcl/op.hpp include/mcl/she.h Makefile
@@ -330,37 +351,18 @@ ifeq ($(MCL_USE_LLVM),2)
   EMCC_OPT+=src/base64m.ll -DMCL_USE_LLVM
   SHE_C_DEP+=src/base64m.ll
 endif
-../she-wasm/she_c.js: src/she_c256.cpp $(SHE_C_DEP)
-	emcc -o $@ src/fp.cpp src/she_c256.cpp $(EMCC_OPT) -DMCL_MAX_BIT_SIZE=256 -s TOTAL_MEMORY=67108864 -s DISABLE_EXCEPTION_CATCHING=0
-
-../she-wasm/she_c384.js: src/she_c384.cpp $(SHE_C_DEP)
-	emcc -o $@ src/fp.cpp src/she_c384.cpp $(EMCC_OPT) -DMCL_MAX_BIT_SIZE=384 -s TOTAL_MEMORY=67108864 -s DISABLE_EXCEPTION_CATCHING=0
-
-../mcl-wasm/mcl_c.js: src/bn_c256.cpp $(MCL_C_DEP)
-	emcc -o $@ src/fp.cpp src/bn_c256.cpp $(EMCC_OPT) -DMCL_MAX_BIT_SIZE=256 -DMCL_USE_WEB_CRYPTO_API -s DISABLE_EXCEPTION_CATCHING=1 -DCYBOZU_DONT_USE_EXCEPTION -DCYBOZU_DONT_USE_STRING -fno-exceptions -MD -MP -MF obj/mcl_c.d
-
-../mcl-wasm/mcl_c512.js: src/bn_c512.cpp $(MCL_C_DEP)
-	emcc -o $@ src/fp.cpp src/bn_c512.cpp $(EMCC_OPT) -DMCL_MAX_BIT_SIZE=512 -DMCL_USE_WEB_CRYPTO_API -s DISABLE_EXCEPTION_CATCHING=1 -DCYBOZU_DONT_USE_EXCEPTION -DCYBOZU_DONT_USE_STRING -fno-exceptions
-
-../ecdsa-wasm/ecdsa_c.js: src/ecdsa_c.cpp src/fp.cpp include/mcl/ecdsa.hpp include/mcl/ecdsa.h Makefile
-	emcc -o $@ src/fp.cpp src/ecdsa_c.cpp $(EMCC_OPT) -DMCL_MAX_BIT_SIZE=256 -DMCL_USE_WEB_CRYPTO_API -s DISABLE_EXCEPTION_CATCHING=1 -DCYBOZU_DONT_USE_EXCEPTION -DCYBOZU_DONT_USE_STRING -fno-exceptions
-
-mcl-wasm:
-	$(MAKE) ../mcl-wasm/mcl_c.js
-	$(MAKE) ../mcl-wasm/mcl_c512.js
-
-she-wasm:
-	$(MAKE) ../she-wasm/she_c.js
-	$(MAKE) ../she-wasm/she_c384.js
-
-ecdsa-wasm:
-	$(MAKE) ../ecdsa-wasm/ecdsa_c.js
 
 # test
 bin/emu:
 	$(CXX) -g -o $@ src/fp.cpp src/bn_c256.cpp test/bn_c256_test.cpp -DMCL_DONT_USE_XBYAK -DMCL_DONT_USE_OPENSSL -DMCL_USE_VINT -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_64BIT_PORTABLE -DMCL_VINT_FIXED_BUFFER -DMCL_MAX_BIT_SIZE=256 -I./include
 bin/pairing_c_min.exe: sample/pairing_c.c include/mcl/vint.hpp src/fp.cpp include/mcl/bn.hpp
-	$(CXX) -o $@ sample/pairing_c.c src/fp.cpp src/bn_c256.cpp -O3 -g -I./include -fno-threadsafe-statics -DMCL_DONT_USE_XBYAK -DMCL_DONT_USE_OPENSSL -DMCL_USE_VINT -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_FIXED_BUFFER -DMCL_MAX_BIT_SIZE=256 -DMCL_VINT_64BIT_PORTABLE -DCYBOZU_DONT_USE_STRING -DCYBOZU_DONT_USE_EXCEPTION -DNDEBUG # -DMCL_DONT_USE_CSPRNG
+	$(CXX) -std=c++03 -O3 -g -fno-threadsafe-statics -fno-exceptions -fno-rtti -o $@ sample/pairing_c.c src/fp.cpp src/bn_c384_256.cpp -I./include -DXBYAK_NO_EXCEPTION -DMCL_DONT_USE_OPENSSL -DMCL_USE_VINT -DMCL_SIZEOF_UNIT=8 -DMCL_VINT_FIXED_BUFFER -DMCL_MAX_BIT_SIZE=384 -DMCL_VINT_64BIT_PORTABLE -DCYBOZU_DONT_USE_STRING -DCYBOZU_DONT_USE_EXCEPTION -DNDEBUG # -DMCL_DONT_USE_CSPRNG
+
+bin/llvm_test64.exe: test/llvm_test.cpp src/base64.ll
+	clang++$(LLVM_VER) -o $@ -Ofast -DNDEBUG -Wall -Wextra -I ./include test/llvm_test.cpp src/base64.ll
+
+bin/llvm_test32.exe: test/llvm_test.cpp src/base32.ll
+	clang++$(LLVM_VER) -o $@ -Ofast -DNDEBUG -Wall -Wextra -I ./include test/llvm_test.cpp src/base32.ll -m32
 
 make_tbl:
 	$(MAKE) ../bls/src/qcoeff-bn254.hpp
@@ -376,7 +378,7 @@ update_cybozulib:
 	cp -a $(addprefix ../cybozulib/,$(wildcard include/cybozu/*.hpp)) include/cybozu/
 
 clean:
-	$(RM) $(LIB_DIR)/*.a $(LIB_DIR)/*.$(LIB_SUF) $(OBJ_DIR)/*.o $(OBJ_DIR)/*.obj $(OBJ_DIR)/*.d $(EXE_DIR)/*.exe $(GEN_EXE) $(ASM_OBJ) $(LIB_OBJ) $(BN256_OBJ) $(BN384_OBJ) $(BN512_OBJ) $(FUNC_LIST) src/*.ll lib/*.a
+	$(RM) $(LIB_DIR)/*.a $(LIB_DIR)/*.$(LIB_SUF) $(OBJ_DIR)/*.o $(OBJ_DIR)/*.obj $(OBJ_DIR)/*.d $(EXE_DIR)/*.exe $(GEN_EXE) $(ASM_OBJ) $(LIB_OBJ) $(BN256_OBJ) $(BN384_OBJ) $(BN512_OBJ) $(FUNC_LIST) lib/*.a src/static_code.asm src/dump_code
 
 ALL_SRC=$(SRC_SRC) $(TEST_SRC) $(SAMPLE_SRC)
 DEPEND_FILE=$(addprefix $(OBJ_DIR)/, $(addsuffix .d,$(basename $(ALL_SRC))))
@@ -385,12 +387,12 @@ DEPEND_FILE=$(addprefix $(OBJ_DIR)/, $(addsuffix .d,$(basename $(ALL_SRC))))
 PREFIX?=/usr/local
 install: lib/libmcl.a lib/libmcl.$(LIB_SUF)
 	$(MKDIR) $(PREFIX)/include/mcl
-	cp -a include/mcl/ $(PREFIX)/include/
-	cp -a include/cybozu/ $(PREFIX)/include/
+	cp -a include/mcl $(PREFIX)/include/
+	cp -a include/cybozu $(PREFIX)/include/
 	$(MKDIR) $(PREFIX)/lib
 	cp -a lib/libmcl.a lib/libmcl.$(LIB_SUF) $(PREFIX)/lib/
 
-.PHONY: test mcl-wasm she-wasm bin/emu
+.PHONY: test she-wasm bin/emu
 
 # don't remove these files automatically
 .SECONDARY: $(addprefix $(OBJ_DIR)/, $(ALL_SRC:.cpp=.o))

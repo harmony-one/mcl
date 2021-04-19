@@ -1,6 +1,6 @@
 # she ; Two-level homomorphic encryption library for browser/Node.js by WebAssembly
 
-# Abstruct
+# Abstract
 she is a somewhat(two-level) homomorphic encryption library,
 which is based on pairings.
 This library supports polynomially many homomorphic additions and
@@ -31,7 +31,7 @@ Sum_i Enc(x_i) Enc(y_i) = Enc(Sum_i x_i y_i).
 * decrypt a ciphertext with a secret key
 
 ## Homomorphic operations
-* homomorphic addtion/substraction over ciphertexts of the same ciphertext class
+* homomorphic addition/subtraction over ciphertexts of the same ciphertext class
 * homomprphic multiplication over ciphertext of CipherTextG1 and CipherTextG2
     * The class of the result is CipherTextGT.
 
@@ -39,7 +39,7 @@ Sum_i Enc(x_i) Enc(y_i) = Enc(Sum_i x_i y_i).
 * This library requires to solve a small DLP to decrypt a ciphertext.
 * The decryption timing is O(m/s), where s is the size of table to solve DLP, and m is the size fo a plaintext.
 * call `setRangeForDLP(s)` to set the table size.
-    * The maximun `m/s` is set by `setTryNum(tryNum)`.
+    * The maximum `m/s` is set by `setTryNum(tryNum)`.
 
 ## Zero-knowledge proof class
 * A zero-knowledge proof is simultaneously created when encrypting a plaintext `m`.
@@ -66,7 +66,7 @@ and read `she.js`.
 
 ## A sample for JS
 
-```
+```js
 // initialize a library
 she.init().then(() => {
   const sec = new she.SecretKey()
@@ -103,7 +103,7 @@ she.init().then(() => {
 
 # A sample for C++
 How to build the library, see [mcl](https://github.com/herumi/mcl/#installation-requirements).
-```
+```c++
 #include <mcl/she.hpp>
 int main()
     try
@@ -255,7 +255,7 @@ PK means PublicKey or PrecomputedPublicKey
 * `CT she.sub(CT x, CT y)`(JS)
     * subtract `x` and `y` and set the value to `z`(or return the value)
 * `void CT::neg(CT& y, const CT& x)`(C++)
-* `void she.neg(CT x)`(JS)
+* `CT she.neg(CT x)`(JS)
     * negate `x` and set the value to `y`(or return the value)
 * `void CT::mul(CT& z, const CT& x, int y)`(C++)
 * `CT she.mulInt(CT x, int y)`(JS)
@@ -281,7 +281,9 @@ PK means PublicKey or PrecomputedPublicKey
 * ZkpBinEq ; verify whether `m1 = m2 = 0` or `1` for ciphertexts `encG1(m1)` and `encG2(m2)`
 
 ### API
-PK = PublicKey or PrecomputedPublicKey
+- SK = SecretKey
+- PK = PublicKey or PrecomputedPublicKey
+- AUX = AuxiliaryForZkpDecGT
 
 * `void PK::encWithZkpBin(CipherTextG1& c, Zkp& zkp, int m) const`(C++)
 * `void PK::encWithZkpBin(CipherTextG2& c, Zkp& zkp, int m) const`(C++)
@@ -296,6 +298,14 @@ PK = PublicKey or PrecomputedPublicKey
 * `[CipherTextG1, CipherTextG2, ZkpEqBin] PK::encWithZkpBinEq(m)`(JS)
     * encrypt `m`(=0 or 1) and set ciphertexts `c1`, `c2` and zero-knowledge proof `zkp`(or returns [c1, c2, zkp])
     * throw exception if m != 0 and m != 1
+* `SK::decWithZkp(DecZkpDec& zkp, const CipherTextG1& c, const PublicKey& pub) const`(C++)
+* `[m, ZkpDecG1] SK::decWithZkpDec(c, pub)`(JS)
+  * decrypt CipherTextG1 `c` and get `m` and zkp, which proves that `dec(c) = m`.
+  * `pub` is used for reducing some computation.
+* `SK::decWithZkpDec(ZkpDecGT& zkp, const CipherTextGT& c, const AuxiliaryForZkpDecGT& aux) const`(C++)
+* `[m, ZkpDecGT] SK::decWithZkpDecGT(c, aux)`(JS)
+  * decrypt CipherTextGT `c` and get `m` and zkp, which proves that `dec(c) = m`.
+  * `aux = pub.getAuxiliaryForZkpDecGT()`, which is used for reducing some computation.
 
 ## Global functions
 

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdint.h>
+#include <cybozu/bit_operation.hpp>
 #ifndef CYBOZU_DONT_USE_EXCEPTION
 #include <cybozu/exception.hpp>
 #endif
@@ -27,7 +28,7 @@
 	#define MCL_USE_VINT
 #endif
 #ifndef MCL_MAX_BIT_SIZE
-	#define MCL_MAX_BIT_SIZE 521
+	#define MCL_MAX_BIT_SIZE 512
 #endif
 #ifdef MCL_USE_VINT
 #include <mcl/vint.hpp>
@@ -96,7 +97,7 @@ template<class T>
 void getArray(bool *pb, T *buf, size_t maxSize, const mpz_class& x)
 {
 #ifdef MCL_USE_VINT
-	*pb = getArray_(buf, maxSize, x.getUnit(), x.getUnitSize());
+	*pb = getArray_(buf, maxSize, x.getUnit(), (int)x.getUnitSize());
 #else
 	*pb = getArray_(buf, maxSize, x.get_mpz_t()->_mp_d, x.get_mpz_t()->_mp_size);
 #endif
@@ -434,6 +435,36 @@ inline size_t getUnitSize(const mpz_class& x)
 	return std::abs(x.get_mpz_t()->_mp_size);
 #endif
 }
+
+/*
+	get the number of lower zeros
+*/
+template<class T>
+size_t getLowerZeroBitNum(const T *x, size_t n)
+{
+	size_t ret = 0;
+	for (size_t i = 0; i < n; i++) {
+		T v = x[i];
+		if (v == 0) {
+			ret += sizeof(T) * 8;
+		} else {
+			ret += cybozu::bsf<T>(v);
+			break;
+		}
+	}
+	return ret;
+}
+
+/*
+	get the number of lower zero
+	@note x != 0
+*/
+inline size_t getLowerZeroBitNum(const mpz_class& x)
+{
+	assert(!isZero(x));
+	return getLowerZeroBitNum(getUnit(x), getUnitSize(x));
+}
+
 inline mpz_class abs(const mpz_class& x)
 {
 #ifdef MCL_USE_VINT
@@ -573,6 +604,53 @@ bool getNAF(Vec& v, const mpz_class& x)
 	} else {
 		v.swap(bin);
 		return false;
+	}
+}
+
+/*
+	v = naf[i]
+	v = 0 or (|v| <= 2^(w-1) - 1 and odd)
+*/
+template<class Vec>
+void getNAFwidth(bool *pb, Vec& naf, mpz_class x, size_t w)
+{
+	assert(w > 0);
+	*pb = true;
+	naf.clear();
+	bool negative = false;
+	if (x < 0) {
+		negative = true;
+		x = -x;
+	}
+	size_t zeroNum = 0;
+	const int signedMaxW = 1 << (w - 1);
+	const int maxW = signedMaxW * 2;
+	const int maskW = maxW - 1;
+	while (!isZero(x)) {
+		size_t z = gmp::getLowerZeroBitNum(x);
+		if (z) {
+			x >>= z;
+			zeroNum += z;
+		}
+		for (size_t i = 0; i < zeroNum; i++) {
+			naf.push(pb, 0);
+			if (!*pb) return;
+		}
+		assert(!isZero(x));
+		int v = getUnit(x)[0] & maskW;
+		x >>= w;
+		if (v & signedMaxW) {
+			x++;
+			v -= maxW;
+		}
+		naf.push(pb, typename Vec::value_type(v));
+		if (!*pb) return;
+		zeroNum = w - 1;
+	}
+	if (negative) {
+		for (size_t i = 0; i < naf.size(); i++) {
+			naf[i] = -naf[i];
+		}
 	}
 }
 
@@ -863,6 +941,85 @@ public:
 	}
 #endif
 };
+
+/*
+	x mod p for a small value x < (pMulTblN * p).
+*/
+struct SmallModp {
+	typedef mcl::fp::Unit Unit;
+	static const size_t unitBitSize = sizeof(Unit) * 8;
+	static const size_t maxTblSize = (MCL_MAX_BIT_SIZE + unitBitSize - 1) / unitBitSize + 1;
+	static const size_t maxMulN = 9;
+	static const size_t pMulTblN = maxMulN + 1;
+	uint32_t N_;
+	uint32_t shiftL_;
+	uint32_t shiftR_;
+	uint32_t maxIdx_;
+	// pMulTbl_[i] = (p * i) >> (pBitSize_ - 1)
+	Unit pMulTbl_[pMulTblN][maxTblSize];
+	// idxTbl_[x] = (x << (pBitSize_ - 1)) / p
+	uint8_t idxTbl_[pMulTblN * 2];
+	// return x >> (pBitSize_ - 1)
+	SmallModp()
+		: N_(0)
+		, shiftL_(0)
+		, shiftR_(0)
+		, maxIdx_(0)
+		, pMulTbl_()
+		, idxTbl_()
+	{
+	}
+	// return argmax { i : x > i * p }
+	uint32_t approxMul(const Unit *x) const
+	{
+		uint32_t top = getTop(x);
+		assert(top <= maxIdx_);
+		return idxTbl_[top];
+	}
+	const Unit *getPmul(size_t v) const
+	{
+		assert(v < pMulTblN);
+		return pMulTbl_[v];
+	}
+	uint32_t getTop(const Unit *x) const
+	{
+		return (x[N_ - 1] >> shiftR_) | (x[N_] << shiftL_);
+	}
+	uint32_t cvtInt(const mpz_class& x) const
+	{
+		assert(mcl::gmp::getUnitSize(x) <= 1);
+		if (x == 0) {
+			return 0;
+		} else {
+			return uint32_t(mcl::gmp::getUnit(x)[0]);
+		}
+	}
+	void init(const mpz_class& p)
+	{
+		size_t pBitSize = mcl::gmp::getBitSize(p);
+		N_ = uint32_t((pBitSize + unitBitSize - 1) / unitBitSize);
+		shiftR_ = (pBitSize - 1) % unitBitSize;
+		shiftL_ = unitBitSize - shiftR_;
+		mpz_class t = 0;
+		for (size_t i = 0; i < pMulTblN; i++) {
+			bool b;
+			mcl::gmp::getArray(&b, pMulTbl_[i], maxTblSize, t);
+			assert(b);
+			(void)b;
+			if (i == pMulTblN - 1) {
+				maxIdx_ = getTop(pMulTbl_[i]);
+				assert(maxIdx_ < CYBOZU_NUM_OF_ARRAY(idxTbl_));
+				break;
+			}
+			t += p;
+		}
+
+		for (uint32_t i = 0; i <= maxIdx_; i++) {
+			idxTbl_[i] = cvtInt((mpz_class(int(i)) << (pBitSize - 1)) / p);
+		}
+	}
+};
+
 
 /*
 	Barrett Reduction

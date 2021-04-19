@@ -14,6 +14,8 @@ cybozu::CpuClock clk;
 typedef mcl::bn::local::Compress Compress;
 using namespace mcl::bn;
 
+#include "common_test.hpp"
+
 mcl::fp::Mode g_mode;
 
 const struct TestSet {
@@ -209,7 +211,7 @@ void testFp12pow(const G1& P, const G2& Q)
 		x.setRand(rg);
 		mpz_class xm = x.getMpz();
 		Fp12::pow(e1, e, xm);
-		BN::param.glv2.pow(e2, e, xm);
+		local::GLV2::pow(e2, e, xm);
 		CYBOZU_TEST_EQUAL(e1, e2);
 	}
 }
@@ -247,6 +249,31 @@ void testMillerLoop2(const G1& P1, const G2& Q1)
 	finalExp(e2, e2);
 	finalExp(e3, e3);
 	CYBOZU_TEST_EQUAL(e2, e3);
+}
+
+void testMillerLoopVec()
+{
+	const size_t n = 40;
+	G1 Pvec[n];
+	G2 Qvec[n];
+	char c = 'a';
+	for (size_t i = 0; i < n; i++) {
+		hashAndMapToG1(Pvec[i], &c, 1);
+		hashAndMapToG2(Qvec[i], &c, 1);
+		c++;
+	}
+	for (size_t m = 0; m < n; m++) {
+		Fp12 f1, f2;
+		f1 = 1;
+		f2.clear();
+		for (size_t i = 0; i < m; i++) {
+			Fp12 e;
+			millerLoop(e, Pvec[i], Qvec[i]);
+			f1 *= e;
+		}
+		millerLoopVec(f2, Pvec, Qvec, m);
+		CYBOZU_TEST_EQUAL(f1, f2);
+	}
 }
 
 void testPairing(const G1& P, const G2& Q, const char *eStr)
@@ -314,7 +341,7 @@ void testTrivial(const G1& P, const G2& Q)
 void testIoAll(const G1& P, const G2& Q)
 {
 	const int FpTbl[] = { 0, 2, 2|mcl::IoPrefix, 10, 16, 16|mcl::IoPrefix, mcl::IoArray, mcl::IoArrayRaw };
-	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize };
+	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize, mcl::IoEcAffineSerialize };
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(FpTbl); i++) {
 		for (size_t j = 0; j < CYBOZU_NUM_OF_ARRAY(EcTbl); j++) {
 			G1 P2 = P, P3;
@@ -378,6 +405,8 @@ CYBOZU_TEST_AUTO(naive)
 		testPairing(P, Q, ts.e);
 		testPrecomputed(P, Q);
 		testMillerLoop2(P, Q);
+		testMillerLoopVec();
+		testCommon(P, Q);
 		testBench(P, Q);
 		benchAddDblG1();
 		benchAddDblG2();

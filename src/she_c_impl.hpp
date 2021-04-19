@@ -41,6 +41,15 @@ static const ZkpEq *cast(const sheZkpEq *p) { return reinterpret_cast<const ZkpE
 static ZkpBinEq *cast(sheZkpBinEq *p) { return reinterpret_cast<ZkpBinEq*>(p); }
 static const ZkpBinEq *cast(const sheZkpBinEq *p) { return reinterpret_cast<const ZkpBinEq*>(p); }
 
+static ZkpDec *cast(sheZkpDec *p) { return reinterpret_cast<ZkpDec*>(p); }
+static const ZkpDec *cast(const sheZkpDec *p) { return reinterpret_cast<const ZkpDec*>(p); }
+
+static AuxiliaryForZkpDecGT *cast(sheAuxiliaryForZkpDecGT *p) { return reinterpret_cast<AuxiliaryForZkpDecGT*>(p); }
+static const AuxiliaryForZkpDecGT *cast(const sheAuxiliaryForZkpDecGT *p) { return reinterpret_cast<const AuxiliaryForZkpDecGT*>(p); }
+
+static ZkpDecGT *cast(sheZkpDecGT *p) { return reinterpret_cast<ZkpDecGT*>(p); }
+static const ZkpDecGT *cast(const sheZkpDecGT *p) { return reinterpret_cast<const ZkpDecGT*>(p); }
+
 int sheInit(int curve, int compiledTimeVar)
 	try
 {
@@ -116,6 +125,16 @@ mclSize sheZkpBinEqSerialize(void *buf, mclSize maxBufSize, const sheZkpBinEq *z
 	return (mclSize)cast(zkp)->serialize(buf, maxBufSize);
 }
 
+mclSize sheZkpDecSerialize(void *buf, mclSize maxBufSize, const sheZkpDec *zkp)
+{
+	return (mclSize)cast(zkp)->serialize(buf, maxBufSize);
+}
+
+mclSize sheZkpGTDecSerialize(void *buf, mclSize maxBufSize, const sheZkpDecGT *zkp)
+{
+	return (mclSize)cast(zkp)->serialize(buf, maxBufSize);
+}
+
 mclSize sheSecretKeyDeserialize(sheSecretKey* sec, const void *buf, mclSize bufSize)
 {
 	return (mclSize)cast(sec)->deserialize(buf, bufSize);
@@ -156,6 +175,16 @@ mclSize sheZkpBinEqDeserialize(sheZkpBinEq* zkp, const void *buf, mclSize bufSiz
 	return (mclSize)cast(zkp)->deserialize(buf, bufSize);
 }
 
+mclSize sheZkpDecDeserialize(sheZkpDec* zkp, const void *buf, mclSize bufSize)
+{
+	return (mclSize)cast(zkp)->deserialize(buf, bufSize);
+}
+
+mclSize sheZkpDecGTDeserialize(sheZkpDecGT* zkp, const void *buf, mclSize bufSize)
+{
+	return (mclSize)cast(zkp)->deserialize(buf, bufSize);
+}
+
 int sheSecretKeySetByCSPRNG(sheSecretKey *sec)
 {
 	cast(sec)->setByCSPRNG();
@@ -167,7 +196,12 @@ void sheGetPublicKey(shePublicKey *pub, const sheSecretKey *sec)
 	cast(sec)->getPublicKey(*cast(pub));
 }
 
-static int setRangeForDLP(void (*f)(mclSize), mclSize hashSize)
+void sheGetAuxiliaryForZkpDecGT(sheAuxiliaryForZkpDecGT *aux, const shePublicKey *pub)
+{
+	cast(pub)->getAuxiliaryForZkpDecGT(*cast(aux));
+}
+
+static int wrapSetRangeForDLP(void f(size_t), mclSize hashSize)
 	try
 {
 	f(hashSize);
@@ -178,19 +212,19 @@ static int setRangeForDLP(void (*f)(mclSize), mclSize hashSize)
 
 int sheSetRangeForDLP(mclSize hashSize)
 {
-	return setRangeForDLP(SHE::setRangeForDLP, hashSize);
+	return wrapSetRangeForDLP(SHE::setRangeForDLP, hashSize);
 }
-int sheSetRangeForG1DLP(mclSize hashSize)
+int sheSetRangeForG1DLPnoexcept(mclSize hashSize)
 {
-	return setRangeForDLP(SHE::setRangeForG1DLP, hashSize);
+	return wrapSetRangeForDLP(SHE::setRangeForG1DLP, hashSize);
 }
 int sheSetRangeForG2DLP(mclSize hashSize)
 {
-	return setRangeForDLP(SHE::setRangeForG2DLP, hashSize);
+	return wrapSetRangeForDLP(SHE::setRangeForG2DLP, hashSize);
 }
 int sheSetRangeForGTDLP(mclSize hashSize)
 {
-	return setRangeForDLP(SHE::setRangeForGTDLP, hashSize);
+	return wrapSetRangeForDLP(SHE::setRangeForGTDLP, hashSize);
 }
 
 void sheSetTryNum(mclSize tryNum)
@@ -766,5 +800,29 @@ int shePrecomputedPublicKeyVerifyZkpEq(const shePrecomputedPublicKey *ppub, cons
 int shePrecomputedPublicKeyVerifyZkpBinEq(const shePrecomputedPublicKey *ppub, const sheCipherTextG1 *c1, const sheCipherTextG2 *c2, const sheZkpBinEq *zkp)
 {
 	return verifyT(*cast(ppub), *cast(c1), *cast(c2), *cast(zkp));
+}
+
+int sheDecWithZkpDecG1(mclInt *m, sheZkpDec *zkp, const sheSecretKey *sec, const sheCipherTextG1 *c, const shePublicKey *pub)
+{
+	bool b;
+	*m = cast(sec)->decWithZkpDec(&b, *cast(zkp), *cast(c), *cast(pub));
+	return b ? 0 : -1;
+}
+
+int sheDecWithZkpDecGT(mclInt *m, sheZkpDecGT *zkp, const sheSecretKey *sec, const sheCipherTextGT *c, const sheAuxiliaryForZkpDecGT *aux)
+{
+	bool b;
+	*m = cast(sec)->decWithZkpDec(&b, *cast(zkp), *cast(c), *cast(aux));
+	return b ? 0 : -1;
+}
+
+int sheVerifyZkpDecG1(const shePublicKey *pub, const sheCipherTextG1 *c1, mclInt m, const sheZkpDec *zkp)
+{
+	return cast(pub)->verify(*cast(c1), m, *cast(zkp));
+}
+
+int sheVerifyZkpDecGT(const sheAuxiliaryForZkpDecGT *aux, const sheCipherTextGT *ct, mclInt m, const sheZkpDecGT *zkp)
+{
+	return cast(aux)->verify(*cast(ct), m, *cast(zkp));
 }
 

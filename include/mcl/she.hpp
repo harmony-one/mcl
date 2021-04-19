@@ -26,6 +26,8 @@
 #include <mcl/window_method.hpp>
 #include <cybozu/endian.hpp>
 #include <cybozu/serializer.hpp>
+#include <cybozu/sha2.hpp>
+#include <mcl/ecparam.hpp>
 
 namespace mcl { namespace she {
 
@@ -324,6 +326,26 @@ int log(const G& P, const G& xP)
 	throw cybozu::Exception("she:log:not found");
 }
 
+struct Hash {
+	cybozu::Sha256 h_;
+	template<class T>
+	Hash& operator<<(const T& t)
+	{
+		char buf[sizeof(T)];
+		cybozu::MemoryOutputStream os(buf, sizeof(buf));
+		t.save(os);
+		h_.update(buf, os.getPos());
+		return *this;
+	}
+	template<class F>
+	void get(F& x)
+	{
+		uint8_t md[32];
+		h_.digest(md, sizeof(md), 0, 0);
+		x.setArrayMask(md, sizeof(md));
+	}
+};
+
 } // mcl::she::local
 
 template<size_t dummyInpl = 0>
@@ -366,10 +388,16 @@ private:
 	public:
 		const G& getS() const { return S_; }
 		const G& getT() const { return T_; }
+		G& getNonConstRefS() { return S_; }
+		G& getNonConstRefT() { return T_; }
 		void clear()
 		{
 			S_.clear();
 			T_.clear();
+		}
+		bool isValid() const
+		{
+			return S_.isValid() && T_.isValid();
 		}
 		static void add(CipherTextAT& z, const CipherTextAT& x, const CipherTextAT& y)
 		{
@@ -537,6 +565,8 @@ private:
 	struct ZkpBinTag;
 	struct ZkpEqTag; // d_[] = { c, sp, ss, sm }
 	struct ZkpBinEqTag; // d_[] = { d0, d1, sp0, sp1, ss, sp, sm }
+	struct ZkpDecTag; // d_[] = { c, h }
+	struct ZkpDecGTTag; // d_[] = { d1, d2, d3, h }
 public:
 	/*
 		Zkp for m = 0 or 1
@@ -550,9 +580,66 @@ public:
 		Zkp for (m = 0 or 1) and decG1(c1) == decG2(c2)
 	*/
 	typedef ZkpT<ZkpBinEqTag, 7> ZkpBinEq;
+	/*
+		Zkp for Dec(c) = m for c in G1
+	*/
+	typedef ZkpT<ZkpDecTag, 2> ZkpDec;
+	/*
+		Zkp for Dec(c) = m for c in GT
+	*/
+	typedef ZkpT<ZkpDecGTTag, 4> ZkpDecGT;
 
 	typedef CipherTextAT<G1> CipherTextG1;
 	typedef CipherTextAT<G2> CipherTextG2;
+	/*
+		auxiliary for ZkpDecGT
+		@note GT is multiplicative group though treating GT as additive group in comment
+	*/
+	struct AuxiliaryForZkpDecGT {
+		GT R_[4]; // [R = e(R, Q), xR, yR, xyR]
+
+		// dst = v[1] a[0] + v[0] a[1] - v[2] a[2]
+		void f(GT& dst, const GT *v, const Fr *a) const
+		{
+			GT t;
+			GT::pow(dst, v[0], a[1]);
+			GT::pow(t, v[1], a[0]);
+			dst *= t;
+			GT::pow(t, v[2], a[2]);
+			GT::unitaryInv(t, t);
+			dst *= t;
+		}
+		bool verify(const CipherTextGT& c, int64_t m, const ZkpDecGT& zkp) const
+		{
+			const Fr *d = &zkp.d_[0];
+			const Fr &h = zkp.d_[3];
+
+			GT A[4];
+			GT t;
+			GT::pow(t, R_[0], m); // m R
+			GT::unitaryInv(t, t);
+			GT::mul(A[0], c.g_[0], t);
+			A[1] = c.g_[1];
+			A[2] = c.g_[2];
+			A[3] = c.g_[3];
+			GT B[3], X;
+			for (int i = 0; i < 3; i++) {
+				GT::pow(B[i], R_[0], d[i]);
+				GT::pow(t, R_[i+1], h);
+				GT::unitaryInv(t, t);
+				B[i] *= t;
+			}
+			f(X, A + 1, zkp.d_);
+			GT::pow(t, A[0], h);
+			GT::unitaryInv(t, t);
+			X *= t;
+			local::Hash hash;
+			hash << R_[1] << R_[2] << R_[3] << A[0] << A[1] << A[2] << A[3] << B[0] << B[1] << B[2] << X;
+			Fr h2;
+			hash.get(h2);
+			return h == h2;
+		}
+	};
 
 	static void init(const mcl::CurveParam& cp = mcl::BN254, size_t hashSize = 1024, size_t tryNum = local::defaultTryNum)
 	{
@@ -576,13 +663,7 @@ public:
 	*/
 	static void initG1only(const mcl::EcParam& para, size_t hashSize = 1024, size_t tryNum = local::defaultTryNum)
 	{
-		Fp::init(para.p);
-		Fr::init(para.n);
-		G1::init(para.a, para.b);
-		const Fp x0(para.gx);
-		const Fp y0(para.gy);
-		P_.set(x0, y0);
-
+		mcl::initCurve<G1, Fr>(para.curveType, &P_);
 		setRangeForG1DLP(hashSize);
 		useDecG1ViaGT_ = false;
 		useDecG2ViaGT_ = false;
@@ -774,6 +855,88 @@ public:
 				return isZero(c.a_);
 			}
 		}
+		int64_t decWithZkpDec(bool *pok, ZkpDec& zkp, const CipherTextG1& c, const PublicKey& pub) const
+		{
+			/*
+				c = (S, T)
+				S = mP + rxP
+				T = rP
+				R = S - xT = mP
+			*/
+			G1 R;
+			G1::mul(R, c.T_, x_);
+			G1::sub(R, c.S_, R);
+			int64_t m = PhashTbl_.log(R, pok);
+			if (!*pok) return 0;
+			const G1& P1 = P_;
+			const G1& P2 = c.T_; // rP
+			const G1& A1 = pub.xP_;
+			G1 A2;
+			G1::sub(A2, c.S_, R); // rxP
+			Fr b;
+			b.setRand();
+			G1 B1, B2;
+			G1::mul(B1, P1, b);
+			G1::mul(B2, P2, b);
+			Fr& d = zkp.d_[0];
+			Fr& h = zkp.d_[1];
+			local::Hash hash;
+			hash << P2 << A1 << A2 << B1 << B2;
+			hash.get(h);
+			Fr::mul(d, h, x_);
+			d += b;
+			return m;
+		}
+		// @note GT is multiplicative group though treating GT as additive group in comment
+		int64_t decWithZkpDec(bool *pok, ZkpDecGT& zkp, const CipherTextGT& c, const AuxiliaryForZkpDecGT& aux) const
+		{
+			int64_t m = dec(c, pok);
+			if (!*pok) return 0;
+			// A = c - Enc(m; 0, 0, 0) = c - (m R, 0, 0, 0)
+			GT A[4];
+			GT t;
+			GT::pow(t, aux.R_[0], m); // m R
+			GT::unitaryInv(t, t);
+			GT::mul(A[0], c.g_[0], t);
+			A[1] = c.g_[1];
+			A[2] = c.g_[2];
+			A[3] = c.g_[3];
+			// dec(A) = 0
+
+			Fr b[3];
+			GT B[3], X;
+			for (int i = 0; i < 3; i++) {
+				b[i].setByCSPRNG();
+				GT::pow(B[i], aux.R_[0], b[i]);
+			}
+			aux.f(X, A + 1, b);
+			local::Hash hash;
+			hash << aux.R_[1] << aux.R_[2] << aux.R_[3] << A[0] << A[1] << A[2] << A[3] << B[0] << B[1] << B[2] << X;
+			Fr *d = &zkp.d_[0];
+			Fr &h = zkp.d_[3];
+			hash.get(h);
+			Fr::mul(d[0], h, x_); // h x
+			Fr::mul(d[1], h, y_); // h y
+			Fr::mul(d[2], d[1], x_); // h xy
+			for (int i = 0; i < 3; i++) {
+				d[i] += b[i];
+			}
+			return m;
+		}
+		int64_t decWithZkpDec(ZkpDec& zkp, const CipherTextG1& c, const PublicKey& pub) const
+		{
+			bool b;
+			int64_t ret = decWithZkpDec(&b, zkp, c, pub);
+			if (!b) throw cybozu::Exception("she:SecretKey:decWithZkpDec");
+			return ret;
+		}
+		int64_t decWithZkpDec(ZkpDecGT& zkp, const CipherTextGT& c, const AuxiliaryForZkpDecGT& aux) const
+		{
+			bool b;
+			int64_t ret = decWithZkpDec(&b, zkp, c, aux);
+			if (!b) throw cybozu::Exception("she:SecretKey:decWithZkpDec");
+			return ret;
+		}
 		template<class InputStream>
 		void load(bool *pb, InputStream& is, int ioMode = IoSerialize)
 		{
@@ -886,16 +1049,10 @@ private:
 		r.setRand();
 		Pmul.mul(static_cast<I&>(R[0][m]), r); // R[0][m] = r P
 		xPmul.mul(R[1][m], r); // R[1][m] = r xP
-		char buf[sizeof(G) * 2];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S.save(os);
-		T.save(os);
-		R[0][0].save(os);
-		R[0][1].save(os);
-		R[1][0].save(os);
-		R[1][1].save(os);
 		Fr c;
-		c.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S << T << R[0][0] << R[0][1] << R[1][0] << R[1][1];
+		hash.get(c);
 		d[m] = c - d[1-m];
 		s[m] = r + d[m] * encRand;
 	}
@@ -925,16 +1082,10 @@ private:
 		G::sub(T2, S, P);
 		G::mul(T2, T2, d[1]);
 		G::sub(R[1][1], T1, T2);
-		char buf[sizeof(G) * 2];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S.save(os);
-		T.save(os);
-		R[0][0].save(os);
-		R[0][1].save(os);
-		R[1][0].save(os);
-		R[1][1].save(os);
 		Fr c;
-		c.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S << T << R[0][0] << R[0][1] << R[1][0] << R[1][1];
+		hash.get(c);
 		return c == d[0] + d[1];
 	}
 	/*
@@ -956,21 +1107,13 @@ private:
 		G2 R3, R4;
 		ElGamalEnc(R1, R2, rm, Pmul, xPmul, &rp);
 		ElGamalEnc(R3, R4, rm, Qmul, yQmul, &rs);
-		char buf[sizeof(G1) * 4 + sizeof(G2) * 4];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S1.save(os);
-		T1.save(os);
-		S2.save(os);
-		T2.save(os);
-		R1.save(os);
-		R2.save(os);
-		R3.save(os);
-		R4.save(os);
 		Fr& c = zkp.d_[0];
 		Fr& sp = zkp.d_[1];
 		Fr& ss = zkp.d_[2];
 		Fr& sm = zkp.d_[3];
-		c.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S1 << T1 << S2 << T2 << R1 << R2 << R3 << R4;
+		hash.get(c);
 		Fr::mul(sp, c, p);
 		sp += rp;
 		Fr::mul(ss, c, s);
@@ -997,18 +1140,10 @@ private:
 		R3 -= X2;
 		G2::mul(X2, T2, c);
 		R4 -= X2;
-		char buf[sizeof(G1) * 4 + sizeof(G2) * 4];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S1.save(os);
-		T1.save(os);
-		S2.save(os);
-		T2.save(os);
-		R1.save(os);
-		R2.save(os);
-		R3.save(os);
-		R4.save(os);
 		Fr c2;
-		c2.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S1 << T1 << S2 << T2 << R1 << R2 << R3 << R4;
+		hash.get(c2);
 		return c == c2;
 	}
 	/*
@@ -1052,20 +1187,10 @@ private:
 		G2 R5, R6;
 		ElGamalEnc(R4, R3, rm, Pmul, xPmul, &rp);
 		ElGamalEnc(R6, R5, rm, Qmul, yQmul, &rs);
-		char buf[sizeof(Fp) * 12];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S1.save(os);
-		T1.save(os);
-		R1[0].save(os);
-		R1[1].save(os);
-		R2[0].save(os);
-		R2[1].save(os);
-		R3.save(os);
-		R4.save(os);
-		R5.save(os);
-		R6.save(os);
 		Fr c;
-		c.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S1 << T1 << R1[0] << R1[1] << R2[0] << R2[1] << R3 << R4 << R5 << R6;
+		hash.get(c);
 		Fr::sub(d[m], c, d[1-m]);
 		Fr::mul(spm[m], d[m], p);
 		spm[m] += rpm;
@@ -1112,20 +1237,10 @@ private:
 		R5 -= X2;
 		G2::mul(X2, S2, c);
 		R6 -= X2;
-		char buf[sizeof(Fp) * 12];
-		cybozu::MemoryOutputStream os(buf, sizeof(buf));
-		S1.save(os);
-		T1.save(os);
-		R1[0].save(os);
-		R1[1].save(os);
-		R2[0].save(os);
-		R2[1].save(os);
-		R3.save(os);
-		R4.save(os);
-		R5.save(os);
-		R6.save(os);
 		Fr c2;
-		c2.setHashOf(buf, os.getPos());
+		local::Hash hash;
+		hash << S1 << T1 << R1[0] << R1[1] << R2[0] << R2[1] << R3 << R4 << R5 << R6;
+		hash.get(c2);
 		return c == c2;
 	}
 	/*
@@ -1266,6 +1381,13 @@ public:
 			ElGamalEnc(c.S_, c.T_, m, QhashTbl_.getWM(), yQmul);
 		}
 public:
+		void getAuxiliaryForZkpDecGT(AuxiliaryForZkpDecGT& aux) const
+		{
+			aux.R_[0] = ePQ_;
+			pairing(aux.R_[1], xP_, Q_);
+			pairing(aux.R_[2], P_, yQ_);
+			pairing(aux.R_[3], xP_, yQ_);
+		}
 		void encWithZkpBin(CipherTextG1& c, ZkpBin& zkp, int m) const
 		{
 			Fr encRand;
@@ -1286,6 +1408,33 @@ public:
 		{
 			const MulG<G1> xPmul(xP_);
 			return verifyZkpBin(c.S_, c.T_, P_, zkp, PhashTbl_.getWM(), xPmul);
+		}
+		bool verify(const CipherTextG1& c, int64_t m, const ZkpDec& zkp) const
+		{
+			/*
+				Enc(m;r) - Enc(m;0) = (S, T) - (mP, 0) = (S - mP, T)
+			*/
+			const Fr& d = zkp.d_[0];
+			const Fr& h = zkp.d_[1];
+			const G1& P1 = P_;
+			const G1& P2 = c.T_; // rP
+			const G1& A1 = xP_;
+			G1 A2;
+			G1::mul(A2, P_, m);
+//			PhashTbl_.getWM().mul(A2, m);
+			G1::sub(A2, c.S_, A2); // S - mP = xrP
+			G1 B1, B2, T;
+			G1::mul(B1, P1, d);
+			G1::mul(B2, P2, d);
+			G1::mul(T, A1, h);
+			B1 -= T;
+			G1::mul(T, A2, h);
+			B2 -= T;
+			Fr h2;
+			local::Hash hash;
+			hash << P2 << A1 << A2 << B1 << B2;
+			hash.get(h2);
+			return h == h2;
 		}
 		bool verify(const CipherTextG2& c, const ZkpBin& zkp) const
 		{
@@ -1599,6 +1748,7 @@ public:
 		friend class PublicKey;
 		friend class PrecomputedPublicKey;
 		friend class CipherTextA;
+		friend struct AuxiliaryForZkpDecGT;
 		template<class T>
 		friend struct PublicKeyMethod;
 	public:
@@ -1809,7 +1959,14 @@ public:
 		template<class InputStream>
 		void load(bool *pb, InputStream& is, int ioMode = IoSerialize)
 		{
-			cybozu::writeChar(pb, isMultiplied_ ? '0' : '1', is); if (!*pb) return;
+			char c;
+			if (!cybozu::readChar(&c, is)) return;
+			if (c == '0' || c == '1') {
+				isMultiplied_ = c == '0';
+			} else {
+				*pb = false;
+				return;
+			}
 			if (isMultiplied()) {
 				m_.load(pb, is, ioMode);
 			} else {
@@ -1819,14 +1976,7 @@ public:
 		template<class OutputStream>
 		void save(bool *pb, OutputStream& os, int ioMode = IoSerialize) const
 		{
-			char c;
-			if (!cybozu::readChar(&c, os)) return;
-			if (c == '0' || c == '1') {
-				isMultiplied_ = c == '0';
-			} else {
-				*pb = false;
-				return;
-			}
+			cybozu::writeChar(pb, os, isMultiplied_ ? '0' : '1'); if (!*pb) return;
 			if (isMultiplied()) {
 				m_.save(pb, os, ioMode);
 			} else {
@@ -1895,6 +2045,9 @@ typedef SHE::CipherText CipherText;
 typedef SHE::ZkpBin ZkpBin;
 typedef SHE::ZkpEq ZkpEq;
 typedef SHE::ZkpBinEq ZkpBinEq;
+typedef SHE::ZkpDec ZkpDec;
+typedef SHE::AuxiliaryForZkpDecGT AuxiliaryForZkpDecGT;
+typedef SHE::ZkpDecGT ZkpDecGT;
 
 inline void init(const mcl::CurveParam& cp = mcl::BN254, size_t hashSize = 1024, size_t tryNum = local::defaultTryNum)
 {

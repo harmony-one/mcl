@@ -57,13 +57,39 @@ CYBOZU_TEST_AUTO(encDec)
 	CYBOZU_TEST_EQUAL(sheDecGT(&dec, &sec, &ct), 0);
 	CYBOZU_TEST_EQUAL(dec, m);
 
-	for (int m = -3; m < 3; m++) {
+	for (int m = -30; m < 30; m++) {
+		dec = 0;
 		sheEncG1(&c1, &pub, m);
+		CYBOZU_TEST_EQUAL(sheDecG1(&dec, &sec, &c1), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
 		CYBOZU_TEST_EQUAL(sheIsZeroG1(&sec, &c1), m == 0);
+		dec = 0;
 		sheEncG2(&c2, &pub, m);
+		CYBOZU_TEST_EQUAL(sheDecG2(&dec, &sec, &c2), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
 		CYBOZU_TEST_EQUAL(sheIsZeroG2(&sec, &c2), m == 0);
+		dec = 0;
 		sheEncGT(&ct, &pub, m);
+		CYBOZU_TEST_EQUAL(sheDecGT(&dec, &sec, &ct), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
 		CYBOZU_TEST_EQUAL(sheIsZeroGT(&sec, &ct), m == 0);
+	}
+	for (int m = -30; m < 30; m++) {
+		dec = 0;
+		sheEncG1(&c1, &pub, 1);
+		sheMulG1(&c1, &c1, m);
+		CYBOZU_TEST_EQUAL(sheDecG1(&dec, &sec, &c1), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
+		dec = 0;
+		sheEncG2(&c2, &pub, 1);
+		sheMulG2(&c2, &c2, m);
+		CYBOZU_TEST_EQUAL(sheDecG2(&dec, &sec, &c2), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
+		dec = 0;
+		sheEncGT(&ct, &pub, 1);
+		sheMulGT(&ct, &ct, m);
+		CYBOZU_TEST_EQUAL(sheDecGT(&dec, &sec, &ct), 0);
+		CYBOZU_TEST_EQUAL(dec, m);
 	}
 }
 
@@ -414,6 +440,52 @@ void ZkpEqTest(const sheSecretKey *sec, const PK *pub, encWithZkpFunc encWithZkp
 		zkp.d[0].d[0]++;
 		CYBOZU_TEST_EQUAL(verify(pub, &c1, &c2, &zkp), 0);
 	}
+}
+
+CYBOZU_TEST_AUTO(ZkpDecG1)
+{
+	sheSecretKey sec;
+	sheSecretKeySetByCSPRNG(&sec);
+	shePublicKey pub;
+	sheGetPublicKey(&pub, &sec);
+	int m = 123;
+	sheCipherTextG1 c1;
+	sheEncG1(&c1, &pub, m);
+	sheZkpDec zkp;
+	int64_t dec;
+	CYBOZU_TEST_EQUAL(sheDecWithZkpDecG1(&dec, &zkp, &sec, &c1, &pub), 0);
+	CYBOZU_TEST_EQUAL(m, dec);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecG1(&pub, &c1, m, &zkp), 1);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecG1(&pub, &c1, m + 1, &zkp), 0);
+	sheCipherTextG1 c2;
+	sheEncG1(&c2, &pub, m);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecG1(&pub, &c2, m, &zkp), 0);
+	zkp.d[0].d[0]++;
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecG1(&pub, &c1, m, &zkp), 0);
+}
+
+CYBOZU_TEST_AUTO(ZkpDecGT)
+{
+	sheSecretKey sec;
+	sheSecretKeySetByCSPRNG(&sec);
+	shePublicKey pub;
+	sheGetPublicKey(&pub, &sec);
+	sheAuxiliaryForZkpDecGT aux;
+	sheGetAuxiliaryForZkpDecGT(&aux, &pub);
+	int m = 123;
+	sheCipherTextGT c1;
+	sheEncGT(&c1, &pub, m);
+	sheZkpDecGT zkp;
+	int64_t dec;
+	CYBOZU_TEST_EQUAL(sheDecWithZkpDecGT(&dec, &zkp, &sec, &c1, &aux), 0);
+	CYBOZU_TEST_EQUAL(m, dec);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecGT(&aux, &c1, m, &zkp), 1);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecGT(&aux, &c1, m + 1, &zkp), 0);
+	sheCipherTextGT c2;
+	sheEncGT(&c2, &pub, m);
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecGT(&aux, &c2, m, &zkp), 0);
+	zkp.d[0].d[0]++;
+	CYBOZU_TEST_EQUAL(sheVerifyZkpDecGT(&aux, &c1, m, &zkp), 0);
 }
 
 CYBOZU_TEST_AUTO(ZkpEq)

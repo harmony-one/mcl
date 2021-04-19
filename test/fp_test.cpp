@@ -92,6 +92,7 @@ void setStrTest()
 		{ "0b100", 4, 2 },
 		{ "0x100", 256, 0 },
 		{ "0x100", 256, 16 },
+		{ "0b100", 0xb100, 16 }, // hex string
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
 		Fp x;
@@ -101,7 +102,6 @@ void setStrTest()
 	// use prefix if base conflicts with prefix
 	{
 		Fp x;
-		CYBOZU_TEST_EXCEPTION(x.setStr("0b100", 16), cybozu::Exception);
 		CYBOZU_TEST_EXCEPTION(x.setStr("0b100", 10), cybozu::Exception);
 		CYBOZU_TEST_EXCEPTION(x.setStr("0x100", 2), cybozu::Exception);
 		CYBOZU_TEST_EXCEPTION(x.setStr("0x100", 10), cybozu::Exception);
@@ -117,6 +117,7 @@ void streamTest()
 	} tbl[] = {
 		{ "100", 100, 256 }, // set base = 10 if base = 0
 		{ "0x100", 256, 256 },
+		{ "0b100", 4, 0xb100 }, // 0b100 = 0xb100 if std::hex
 	};
 	Fp::setIoMode(0);
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
@@ -133,10 +134,6 @@ void streamTest()
 			CYBOZU_TEST_EQUAL(x, tbl[i].out16);
 		}
 	}
-	// use prefix if base conflicts with prefix
-	std::istringstream is("0b100");
-	Fp x;
-	CYBOZU_TEST_EXCEPTION(is >> std::hex >> x, cybozu::Exception);
 	{
 		std::ostringstream os;
 		os << Fp(123);
@@ -429,6 +426,7 @@ void powTest()
 	CYBOZU_TEST_EQUAL(z, 1);
 	Fp::pow(z, x, Fp::getOp().mp);
 	CYBOZU_TEST_EQUAL(z, x);
+#if 0
 	typedef mcl::FpT<tag2, 128> Fp_other;
 	Fp_other::init("1009");
 	x = 5;
@@ -439,6 +437,7 @@ void powTest()
 	x = 5;
 	Fp::pow(x, x, n);
 	CYBOZU_TEST_EQUAL(x, 125);
+#endif
 }
 
 void mulUnitTest()
@@ -490,6 +489,7 @@ void powGmp()
 
 struct TagAnother;
 
+#if 0
 void anotherFpTest(mcl::fp::Mode mode)
 {
 	typedef mcl::FpT<TagAnother, 128> G;
@@ -499,6 +499,7 @@ void anotherFpTest(mcl::fp::Mode mode)
 	a *= b;
 	CYBOZU_TEST_EQUAL(a, 1);
 }
+#endif
 
 void setArrayTest1()
 {
@@ -511,6 +512,7 @@ void setArrayTest1()
 	CYBOZU_TEST_EQUAL(x, Fp("0x3400000012"));
 }
 
+#if 0
 void setArrayTest2(mcl::fp::Mode mode)
 {
 	Fp::init("0x10000000000001234567a5", mode);
@@ -532,6 +534,7 @@ void setArrayTest2(mcl::fp::Mode mode)
 	uint32_t large[3] = { 0x234567a5, 0x00000001, 0x00100000};
 	CYBOZU_TEST_EXCEPTION(x.setArray(large, 3), cybozu::Exception);
 }
+#endif
 
 void setArrayMaskTest1()
 {
@@ -544,6 +547,7 @@ void setArrayMaskTest1()
 	CYBOZU_TEST_EQUAL(x, Fp("0x3400000012"));
 }
 
+#if 0
 void setArrayMaskTest2(mcl::fp::Mode mode)
 {
 	Fp::init("0x10000000000001234567a5", mode);
@@ -563,6 +567,7 @@ void setArrayMaskTest2(mcl::fp::Mode mode)
 		CYBOZU_TEST_EQUAL(x, Fp(tbl[i].expected));
 	}
 }
+#endif
 
 void setArrayModTest()
 {
@@ -605,13 +610,13 @@ void setArrayModTest()
 
 CYBOZU_TEST_AUTO(set64bit)
 {
-	Fp::init("0x1000000000000000000f");
+	Fp::init("3138550867693340381917894711603833208051177722232017256453");
 	const struct {
 		const char *p;
 		int64_t i;
 	} tbl[] = {
 		{ "0x1234567812345678", int64_t(0x1234567812345678ull) },
-		{ "0xfffedcba987edcba997", -int64_t(0x1234567812345678ull) },
+		{ "-5", -5 },
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
 		Fp x(tbl[i].p);
@@ -654,7 +659,7 @@ void getInt64Test()
 {
 	const int64_t tbl[] = {
 		0, 1, 123, 0xffffffff, int64_t(0x7fffffffffffffffull),
-		-1, -2, -12345678, int64_t(-9223372036854775808ull)/*-int64_t(1) << 63*/,
+		-1, -2, -12345678, -int64_t(0x7fffffffffffffffull) - 1/*-int64_t(1) << 63*/,
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
 		int64_t a = tbl[i];
@@ -672,6 +677,36 @@ void getInt64Test()
 		bool b = true;
 		CYBOZU_TEST_EQUAL(x.getInt64(&b), 0u);
 		CYBOZU_TEST_ASSERT(!b);
+	}
+}
+
+void getLittleEndianTest()
+{
+	if (Fp::getOp().bitSize < 80) return;
+	const struct {
+		const char *in;
+		uint8_t out[16];
+		size_t size;
+	} tbl[] = {
+		{ "0", { 0 }, 1 },
+		{ "1", { 1 }, 1 },
+		{ "0x1200", { 0x00, 0x12 }, 2 },
+		{ "0x123400", { 0x00, 0x34, 0x12 }, 3 },
+		{ "0x1234567890123456ab", { 0xab, 0x56, 0x34, 0x12, 0x90, 0x78, 0x56, 0x34, 0x12 }, 9 },
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		Fp x(tbl[i].in);
+		uint8_t buf[128];
+		size_t n = x.getLittleEndian(buf, tbl[i].size);
+		CYBOZU_TEST_EQUAL(n, tbl[i].size);
+		CYBOZU_TEST_EQUAL_ARRAY(buf, tbl[i].out, n);
+
+		n = x.getLittleEndian(buf, tbl[i].size + 1);
+		CYBOZU_TEST_EQUAL(n, tbl[i].size);
+		CYBOZU_TEST_EQUAL_ARRAY(buf, tbl[i].out, n);
+
+		n = x.getLittleEndian(buf, tbl[i].size - 1);
+		CYBOZU_TEST_EQUAL(n, 0);
 	}
 }
 
@@ -849,7 +884,7 @@ void modpTest()
 }
 
 #include <iostream>
-#if (defined(MCL_USE_LLVM) || defined(MCL_USE_XBYAK)) && (MCL_MAX_BIT_SIZE >= 521)
+#if (defined(MCL_USE_LLVM) || defined(MCL_X64_ASM)) && (MCL_MAX_BIT_SIZE >= 521)
 CYBOZU_TEST_AUTO(mod_NIST_P521)
 {
 	const size_t len = 521;
@@ -881,7 +916,7 @@ CYBOZU_TEST_AUTO(mod_NIST_P521)
 		mcl_fpDbl_mod_NIST_P521L(ex, in, Fp::getOp().p);
 		CYBOZU_TEST_EQUAL_ARRAY(ex, ok, N + 1);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		const mcl::fp::Op& op = Fp::getOp();
 		if (!op.isMont) {
 			op.fpDbl_mod(ex, in, op.p);
@@ -892,21 +927,23 @@ CYBOZU_TEST_AUTO(mod_NIST_P521)
 }
 #endif
 
+void mul2Test()
+{
+	const int x0 = 1234567;
+	Fp x = x0;
+	mpz_class mx = x0;
+	for (size_t i = 0; i < 100; i++) {
+		Fp::mul2(x, x);
+		mx = (mx * 2) % Fp::getOp().mp;
+		CYBOZU_TEST_EQUAL(mx, x.getMpz());
+	}
+}
+
 void sub(mcl::fp::Mode mode)
 {
 	printf("mode=%s\n", mcl::fp::ModeToStr(mode));
 	const char *tbl[] = {
-		// N = 2
-		"0x0000000000000001000000000000000d",
-		"0x7fffffffffffffffffffffffffffffff",
-		"0x8000000000000000000000000000001d",
-		"0xffffffffffffffffffffffffffffff61",
-
 		// N = 3
-		"0x000000000000000100000000000000000000000000000033", // min prime
-		"0x00000000fffffffffffffffffffffffffffffffeffffac73",
-		"0x0000000100000000000000000001b8fa16dfab9aca16b6b3",
-		"0x000000010000000000000000000000000000000000000007",
 		"0x30000000000000000000000000000000000000000000002b",
 		"0x70000000000000000000000000000000000000000000001f",
 		"0x800000000000000000000000000000000000000000000005",
@@ -935,6 +972,7 @@ void sub(mcl::fp::Mode mode)
 		const char *pStr = tbl[i];
 		printf("prime=%s\n", pStr);
 		Fp::init(pStr, mode);
+		mul2Test();
 		cstrTest();
 		setStrTest();
 		streamTest();
@@ -954,15 +992,16 @@ void sub(mcl::fp::Mode mode)
 		setArrayModTest();
 		getUint64Test();
 		getInt64Test();
+		getLittleEndianTest();
 		divBy2Test();
 		getStrTest();
 		setHashOfTest();
 		serializeTest();
 		modpTest();
 	}
-	anotherFpTest(mode);
-	setArrayTest2(mode);
-	setArrayMaskTest2(mode);
+//	anotherFpTest(mode);
+//	setArrayTest2(mode);
+//	setArrayMaskTest2(mode);
 }
 
 std::string g_mode;
@@ -986,7 +1025,7 @@ CYBOZU_TEST_AUTO(main)
 		sub(mcl::fp::FP_LLVM_MONT);
 	}
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 	if (g_mode.empty() || g_mode == "xbyak") {
 		sub(mcl::fp::FP_XBYAK);
 	}
