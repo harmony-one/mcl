@@ -9,705 +9,472 @@
 #include <mcl/op.hpp>
 #include <mcl/util.hpp>
 #include <cybozu/bit_operation.hpp>
+//#ifdef MCL_WASM32
+// compiler option : -msimd128
+//	#include <wasm_simd128.h>
+//#endif
 
 #ifdef _MSC_VER
 	#pragma warning(push)
 	#pragma warning(disable : 4127)
 #endif
 
-#ifndef MCL_LLVM_BMI2
-	#if (CYBOZU_HOST == CYBOZU_HOST_INTEL) && defined(MCL_USE_XBYAK) && !defined(MCL_USE_VINT)
-		#define MCL_LLVM_BMI2 1
-	#endif
-#endif
-
 namespace mcl { namespace fp {
 
-struct Gtag; // GMP
-struct Ltag; // LLVM
-#if MCL_LLVM_BMI2 == 1
-struct LBMI2tag; // LLVM with Intel BMI2 instruction
-#endif
-struct Atag; // asm
-
-template<class Tag> struct TagToStr { };
-template<> struct TagToStr<Gtag> { static const char *f() { return "Gtag"; } };
-template<> struct TagToStr<Ltag> { static const char *f() { return "Ltag"; } };
-#if MCL_LLVM_BMI2 == 1
-template<> struct TagToStr<LBMI2tag> { static const char *f() { return "LBMI2tag"; } };
-#endif
-template<> struct TagToStr<Atag> { static const char *f() { return "Atag"; } };
-
 template<size_t N>
-void clearC(Unit *x)
+static void shr1T(Unit *y, const Unit *x)
 {
-	clearArray(x, 0, N);
+	bint::shrT<N>(y, x, 1);
 }
 
 template<size_t N>
-bool isZeroC(const Unit *x)
+void addModT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
 {
-	return isZeroArray(x, N);
+	if (bint::addT<N>(z, x, y)) {
+		bint::subT<N>(z, z, p);
+		return;
+	}
+	Unit tmp[N];
+	if (bint::subT<N>(tmp, z, p) == 0) {
+		bint::copyT<N>(z, tmp);
+	}
 }
 
 template<size_t N>
-void copyC(Unit *y, const Unit *x)
+void addModNFT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
 {
-	copyArray(y, x, N);
+	bint::addNFT<N>(z, x, y);
+	Unit tmp[N];
+	if (bint::subNFT<N>(tmp, z, p) == 0) {
+		bint::copyT<N>(z, tmp);
+	}
 }
 
-// (carry, z[N]) <- x[N] + y[N]
-template<size_t N, class Tag = Gtag>
-struct AddPre {
-	static inline Unit func(Unit *z, const Unit *x, const Unit *y)
-	{
-#ifdef MCL_USE_VINT
-		return mcl::vint::addN(z, x, y, N);
-#else
-		return mpn_add_n((mp_limb_t*)z, (const mp_limb_t*)x, (const mp_limb_t*)y, N);
-#endif
+template<size_t N>
+void subModT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	if (bint::subT<N>(z, x, y)) {
+		bint::addT<N>(z, z, p);
 	}
-	static const u3u f;
-};
-template<size_t N, class Tag>
-const u3u AddPre<N, Tag>::f = AddPre<N, Tag>::func;
+}
 
-// (carry, x[N]) <- x[N] + y
-template<class Tag = Gtag>
-struct AddUnitPre {
-	static inline Unit func(Unit *x, Unit n, Unit y)
-	{
-#if 1
-		int ret = 0;
-		Unit t = x[0] + y;
-		x[0] = t;
-		if (t >= y) goto EXIT_0;
-		for (size_t i = 1; i < n; i++) {
-			t = x[i] + 1;
-			x[i] = t;
-			if (t != 0) goto EXIT_0;
-		}
-		ret = 1;
-	EXIT_0:
-		return ret;
-#else
-		return mpn_add_1((mp_limb_t*)x, (const mp_limb_t*)x, (int)n, y);
-#endif
+template<size_t N>
+void subModNFT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	if (bint::subNFT<N>(z, x, y)) {
+		bint::addNFT<N>(z, z, p);
 	}
-	static const u1uII f;
-};
-template<class Tag>
-const u1uII AddUnitPre<Tag>::f = AddUnitPre<Tag>::func;
-
-// (carry, z[N]) <- x[N] - y[N]
-template<size_t N, class Tag = Gtag>
-struct SubPre {
-	static inline Unit func(Unit *z, const Unit *x, const Unit *y)
-	{
-#ifdef MCL_USE_VINT
-		return mcl::vint::subN(z, x, y, N);
-#else
-		return mpn_sub_n((mp_limb_t*)z, (const mp_limb_t*)x, (const mp_limb_t*)y, N);
-#endif
-	}
-	static const u3u f;
-};
-
-template<size_t N, class Tag>
-const u3u SubPre<N, Tag>::f = SubPre<N, Tag>::func;
-
-// y[N] <- (x[N] >> 1)
-template<size_t N, class Tag = Gtag>
-struct Shr1 {
-	static inline void func(Unit *y, const Unit *x)
-	{
-#ifdef MCL_USE_VINT
-		mcl::vint::shrN(y, x, N, 1);
-#else
-		mpn_rshift((mp_limb_t*)y, (const mp_limb_t*)x, (int)N, 1);
-#endif
-	}
-	static const void2u f;
-};
-
-template<size_t N, class Tag>
-const void2u Shr1<N, Tag>::f = Shr1<N, Tag>::func;
+}
 
 // y[N] <- (-x[N]) % p[N]
-template<size_t N, class Tag = Gtag>
-struct Neg {
-	static inline void func(Unit *y, const Unit *x, const Unit *p)
-	{
-		if (isZeroC<N>(x)) {
-			if (x != y) clearC<N>(y);
-			return;
-		}
-		SubPre<N, Tag>::f(y, p, x);
+template<size_t N>
+static void negT(Unit *y, const Unit *x, const Unit *p)
+{
+	if (bint::isZeroT<N>(x)) {
+		if (x != y) bint::clearT<N>(y);
+		return;
 	}
-	static const void3u f;
-};
-
-template<size_t N, class Tag>
-const void3u Neg<N, Tag>::f = Neg<N, Tag>::func;
-
-// z[N * 2] <- x[N] * y[N]
-template<size_t N, class Tag = Gtag>
-struct MulPreCore {
-	static inline void func(Unit *z, const Unit *x, const Unit *y)
-	{
-#ifdef MCL_USE_VINT
-		mcl::vint::mulNM(z, x, N, y, N);
-#else
-		mpn_mul_n((mp_limb_t*)z, (const mp_limb_t*)x, (const mp_limb_t*)y, (int)N);
-#endif
-	}
-	static const void3u f;
-};
-
-template<size_t N, class Tag>
-const void3u MulPreCore<N, Tag>::f = MulPreCore<N, Tag>::func;
-
-template<class Tag = Gtag>
-struct EnableKaratsuba {
-	/* always use mpn* for Gtag */
-	static const size_t minMulN = 100;
-	static const size_t minSqrN = 100;
-};
-
-template<size_t N, class Tag = Gtag>
-struct MulPre {
-	/*
-		W = 1 << H
-		x = aW + b, y = cW + d
-		xy = acW^2 + (ad + bc)W + bd
-		ad + bc = (a + b)(c + d) - ac - bd
-	*/
-	static inline void karatsuba(Unit *z, const Unit *x, const Unit *y)
-	{
-		const size_t H = N / 2;
-		MulPre<H, Tag>::f(z, x, y); // bd
-		MulPre<H, Tag>::f(z + N, x + H, y + H); // ac
-		Unit a_b[H];
-		Unit c_d[H];
-		Unit c1 = AddPre<H, Tag>::f(a_b, x, x + H); // a + b
-		Unit c2 = AddPre<H, Tag>::f(c_d, y, y + H); // c + d
-		Unit tmp[N];
-		MulPre<H, Tag>::f(tmp, a_b, c_d);
-		Unit c = c1 & c2;
-		if (c1) {
-			c += AddPre<H, Tag>::f(tmp + H, tmp + H, c_d);
-		}
-		if (c2) {
-			c += AddPre<H, Tag>::f(tmp + H, tmp + H, a_b);
-		}
-		// c:tmp[N] = (a + b)(c + d)
-		c -= SubPre<N, Tag>::f(tmp, tmp, z);
-		c -= SubPre<N, Tag>::f(tmp, tmp, z + N);
-		// c:tmp[N] = ad + bc
-		c += AddPre<N, Tag>::f(z + H, z + H, tmp);
-		assert(c <= 2);
-		if (c) {
-			AddUnitPre<Tag>::f(z + N + H, H, c);
-		}
-	}
-	static inline void func(Unit *z, const Unit *x, const Unit *y)
-	{
-#if 1
-		if (N >= EnableKaratsuba<Tag>::minMulN && (N % 2) == 0) {
-			karatsuba(z, x, y);
-			return;
-		}
-#endif
-		MulPreCore<N, Tag>::f(z, x, y);
-	}
-	static const void3u f;
-};
-
-template<size_t N, class Tag>
-const void3u MulPre<N, Tag>::f = MulPre<N, Tag>::func;
-
-template<class Tag>
-struct MulPre<0, Tag> {
-	static inline void f(Unit*, const Unit*, const Unit*) {}
-};
-
-template<class Tag>
-struct MulPre<1, Tag> {
-	static inline void f(Unit* z, const Unit* x, const Unit* y)
-	{
-		MulPreCore<1, Tag>::f(z, x, y);
-	}
-};
-
-// z[N * 2] <- x[N] * x[N]
-template<size_t N, class Tag = Gtag>
-struct SqrPreCore {
-	static inline void func(Unit *y, const Unit *x)
-	{
-#ifdef MCL_USE_VINT
-		mcl::vint::sqrN(y, x, N);
-#else
-		mpn_sqr((mp_limb_t*)y, (const mp_limb_t*)x, N);
-#endif
-	}
-	static const void2u f;
-};
-
-template<size_t N, class Tag>
-const void2u SqrPreCore<N, Tag>::f = SqrPreCore<N, Tag>::func;
-
-template<size_t N, class Tag = Gtag>
-struct SqrPre {
-	/*
-		W = 1 << H
-		x = aW + b
-		x^2 = aaW^2 + 2abW + bb
-	*/
-	static inline void karatsuba(Unit *z, const Unit *x)
-	{
-		const size_t H = N / 2;
-		SqrPre<H, Tag>::f(z, x); // b^2
-		SqrPre<H, Tag>::f(z + N, x + H); // a^2
-		Unit ab[N];
-		MulPre<H, Tag>::f(ab, x, x + H); // ab
-		Unit c = AddPre<N, Tag>::f(ab, ab, ab);
-		c += AddPre<N, Tag>::f(z + H, z + H, ab);
-		if (c) {
-			AddUnitPre<Tag>::f(z + N + H, H, c);
-		}
-	}
-	static inline void func(Unit *y, const Unit *x)
-	{
-#if 1
-		if (N >= EnableKaratsuba<Tag>::minSqrN && (N % 2) == 0) {
-			karatsuba(y, x);
-			return;
-		}
-#endif
-		SqrPreCore<N, Tag>::f(y, x);
-	}
-	static const void2u f;
-};
-template<size_t N, class Tag>
-const void2u SqrPre<N, Tag>::f = SqrPre<N, Tag>::func;
-
-template<class Tag>
-struct SqrPre<0, Tag> {
-	static inline void f(Unit*, const Unit*) {}
-};
-
-template<class Tag>
-struct SqrPre<1, Tag> {
-	static inline void f(Unit* y, const Unit* x)
-	{
-		SqrPreCore<1, Tag>::f(y, x);
-	}
-};
+	bint::subT<N>(y, p, x);
+}
 
 // z[N + 1] <- x[N] * y
-template<size_t N, class Tag = Gtag>
-struct MulUnitPre {
-	static inline void func(Unit *z, const Unit *x, Unit y)
-	{
-#ifdef MCL_USE_VINT
-		z[N] = mcl::vint::mulu1(z, x, N, y);
-#else
-		z[N] = mpn_mul_1((mp_limb_t*)z, (const mp_limb_t*)x, N, y);
-#endif
-	}
-	static const void2uI f;
-};
-
-template<size_t N, class Tag>
-const void2uI MulUnitPre<N, Tag>::f = MulUnitPre<N, Tag>::func;
-
-// z[N] <- x[N + 1] % p[N]
-template<size_t N, class Tag = Gtag>
-struct N1_Mod {
-	static inline void func(Unit *y, const Unit *x, const Unit *p)
-	{
-#ifdef MCL_USE_VINT
-		mcl::vint::divNM<Unit>(0, 0, y, x, N + 1, p, N);
-#else
-		mp_limb_t q[2]; // not used
-		mpn_tdiv_qr(q, (mp_limb_t*)y, 0, (const mp_limb_t*)x, N + 1, (const mp_limb_t*)p, N);
-#endif
-	}
-	static const void3u f;
-};
-
-template<size_t N, class Tag>
-const void3u N1_Mod<N, Tag>::f = N1_Mod<N, Tag>::func;
+template<size_t N>
+static void mulUnitPreT(Unit *z, const Unit *x, Unit y)
+{
+	z[N] = bint::mulUnitT<N>(z, x, y);
+}
 
 // z[N] <- (x[N] * y) % p[N]
-template<size_t N, class Tag = Gtag>
-struct MulUnit {
-	static inline void func(Unit *z, const Unit *x, Unit y, const Unit *p)
-	{
-		Unit xy[N + 1];
-		MulUnitPre<N, Tag>::f(xy, x, y);
-#if 1
-		Unit len = UnitBitSize - 1 - cybozu::bsr(p[N - 1]);
-		Unit v = xy[N];
-		if (N > 1 && len < 3 && v < 0xff) {
-			for (;;) {
-				if (len == 0) {
-					v = xy[N];
-				} else {
-					v = (xy[N] << len) | (xy[N - 1] >> (UnitBitSize - len));
-				}
-				if (v == 0) break;
-				if (v == 1) {
-					xy[N] -= SubPre<N, Tag>::f(xy, xy, p);
-				} else {
-					Unit t[N + 1];
-					MulUnitPre<N, Tag>::f(t, p, v);
-					SubPre<N + 1, Tag>::f(xy, xy, t);
-				}
-			}
-			for (;;) {
-				if (SubPre<N, Tag>::f(z, xy, p)) {
-					copyC<N>(z, xy);
-					return;
-				}
-				if (SubPre<N, Tag>::f(xy, z, p)) {
-					return;
-				}
-			}
-		}
-#endif
-		N1_Mod<N, Tag>::f(z, xy, p);
-	}
-	static const void2uIu f;
-};
-
-template<size_t N, class Tag>
-const void2uIu MulUnit<N, Tag>::f = MulUnit<N, Tag>::func;
+template<size_t N>
+static void mulUnitModT(Unit *z, const Unit *x, Unit y, const Unit *p)
+{
+	Unit xy[N + 1];
+	mulUnitPreT<N>(xy, x, y);
+	size_t n = bint::div(0, 0, xy, N + 1, p, N);
+	bint::copyN(z, xy, n);
+	bint::clearN(z + n, N - n);
+}
 
 // z[N] <- x[N * 2] % p[N]
-template<size_t N, class Tag = Gtag>
-struct Dbl_Mod {
-	static inline void func(Unit *y, const Unit *x, const Unit *p)
-	{
-#ifdef MCL_USE_VINT
-		mcl::vint::divNM<Unit>(0, 0, y, x, N * 2, p, N);
-#else
-		mp_limb_t q[N + 1]; // not used
-		mpn_tdiv_qr(q, (mp_limb_t*)y, 0, (const mp_limb_t*)x, N * 2, (const mp_limb_t*)p, N);
-#endif
-	}
-	static const void3u f;
-};
-
-template<size_t N, class Tag>
-const void3u Dbl_Mod<N, Tag>::f = Dbl_Mod<N, Tag>::func;
-
-template<size_t N, class Tag>
-struct SubIfPossible {
-	static inline void f(Unit *z, const Unit *p)
-	{
-		Unit tmp[N - 1];
-		if (SubPre<N - 1, Tag>::f(tmp, z, p) == 0) {
-			copyC<N - 1>(z, tmp);
-			z[N - 1] = 0;
-		}
-	}
-};
-template<class Tag>
-struct SubIfPossible<1, Tag> {
-	static inline void f(Unit *, const Unit *)
-	{
-	}
-};
-
-
-// z[N] <- (x[N] + y[N]) % p[N]
-template<size_t N, bool isFullBit, class Tag = Gtag>
-struct Add {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		if (isFullBit) {
-			if (AddPre<N, Tag>::f(z, x, y)) {
-				SubPre<N, Tag>::f(z, z, p);
-				return;
-			}
-			Unit tmp[N];
-			if (SubPre<N, Tag>::f(tmp, z, p) == 0) {
-				copyC<N>(z, tmp);
-			}
-		} else {
-			AddPre<N, Tag>::f(z, x, y);
-			Unit a = z[N - 1];
-			Unit b = p[N - 1];
-			if (a < b) return;
-			if (a > b) {
-				SubPre<N, Tag>::f(z, z, p);
-				return;
-			}
-			/* the top of z and p are same */
-			SubIfPossible<N, Tag>::f(z, p);
-		}
-	}
-	static const void4u f;
-};
-
-template<size_t N, bool isFullBit, class Tag>
-const void4u Add<N, isFullBit, Tag>::f = Add<N, isFullBit, Tag>::func;
-
-// z[N] <- (x[N] - y[N]) % p[N]
-template<size_t N, bool isFullBit, class Tag = Gtag>
-struct Sub {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		if (SubPre<N, Tag>::f(z, x, y)) {
-			AddPre<N, Tag>::f(z, z, p);
-		}
-	}
-	static const void4u f;
-};
-
-template<size_t N, bool isFullBit, class Tag>
-const void4u Sub<N, isFullBit, Tag>::f = Sub<N, isFullBit, Tag>::func;
+template<size_t N>
+static void fpDblModT(Unit *y, const Unit *x, const Unit *p)
+{
+	Unit t[N * 2];
+	bint::copyN(t, x, N * 2);
+	size_t n = bint::div(0, 0, t, N * 2, p, N);
+	bint::copyN(y, t, n);
+	bint::clearN(y + n, N - n);
+}
 
 //	z[N * 2] <- (x[N * 2] + y[N * 2]) mod p[N] << (N * UnitBitSize)
-template<size_t N, class Tag = Gtag>
-struct DblAdd {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		if (AddPre<N * 2, Tag>::f(z, x, y)) {
-			SubPre<N, Tag>::f(z + N, z + N, p);
-			return;
-		}
-		Unit tmp[N];
-		if (SubPre<N, Tag>::f(tmp, z + N, p) == 0) {
-			memcpy(z + N, tmp, sizeof(tmp));
-		}
+template<size_t N>
+static void fpDblAddModT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	if (bint::addT<N * 2>(z, x, y)) {
+		bint::subT<N>(z + N, z + N, p);
+		return;
 	}
-	static const void4u f;
-};
-
-template<size_t N, class Tag>
-const void4u DblAdd<N, Tag>::f = DblAdd<N, Tag>::func;
+	Unit tmp[N];
+	if (bint::subT<N>(tmp, z + N, p) == 0) {
+		bint::copyN(z + N, tmp, N);
+	}
+}
 
 //	z[N * 2] <- (x[N * 2] - y[N * 2]) mod p[N] << (N * UnitBitSize)
-template<size_t N, class Tag = Gtag>
-struct DblSub {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		if (SubPre<N * 2, Tag>::f(z, x, y)) {
-			AddPre<N, Tag>::f(z + N, z + N, p);
-		}
+template<size_t N>
+static void fpDblSubModT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	if (bint::subT<N * 2>(z, x, y)) {
+		bint::addT<N>(z + N, z + N, p);
 	}
-	static const void4u f;
-};
+}
 
-template<size_t N, class Tag>
-const void4u DblSub<N, Tag>::f = DblSub<N, Tag>::func;
+// [return:z[N+1]] = z[N+1] + x[N] * y + (CF << (N * UnitBitSize))
+template<size_t N, typename T>
+Unit mulUnitAddFullWithCF(T z[N + 1], const Unit x[N], Unit y, Unit CF)
+{
+	Unit H = bint::mulUnitAddT<N>(z, x, y);
+	T v = z[N];
+	v += H;
+	Unit CF2 = v < H;
+	v += CF;
+	CF2 += v < CF;
+	z[N] = v;
+	return CF2;
+}
 
 /*
 	z[N] <- montRed(xy[N * 2], p[N])
 	REMARK : assume p[-1] = rp
 */
-template<size_t N, class Tag = Gtag>
-struct MontRed {
-	static inline void func(Unit *z, const Unit *xy, const Unit *p)
-	{
-		const Unit rp = p[-1];
-		Unit pq[N + 1];
-		Unit buf[N * 2 + 1];
-		copyC<N - 1>(buf + N + 1, xy + N + 1);
-		buf[N * 2] = 0;
-		Unit q = xy[0] * rp;
-		MulUnitPre<N, Tag>::f(pq, p, q);
-		Unit up = AddPre<N + 1, Tag>::f(buf, xy, pq);
-		if (up) {
-			buf[N * 2] = AddUnitPre<Tag>::f(buf + N + 1, N - 1, 1);
-		}
-		Unit *c = buf + 1;
-		for (size_t i = 1; i < N; i++) {
-			q = c[0] * rp;
-			MulUnitPre<N, Tag>::f(pq, p, q);
-			up = AddPre<N + 1, Tag>::f(c, c, pq);
-			if (up) {
-				AddUnitPre<Tag>::f(c + N + 1, N - i, 1);
-			}
-			c++;
-		}
-		if (c[N]) {
-			SubPre<N, Tag>::f(z, c, p);
-		} else {
-			if (SubPre<N, Tag>::f(z, c, p)) {
-				memcpy(z, c, N * sizeof(Unit));
-			}
+template<size_t N>
+static void modRedT(Unit *z, const Unit *xy, const Unit *p)
+{
+	const Unit rp = p[-1];
+#ifdef MCL_WASM32
+	uint64_t buf[N * 2];
+#else
+	Unit buf[N * 2];
+#endif
+	bint::copyT<N * 2>(buf, xy);
+	Unit CF = 0;
+	for (size_t i = 0; i < N; i++) {
+		Unit q = buf[i] * rp;
+		CF = mulUnitAddFullWithCF<N>(buf + i, p, q, CF);
+	}
+	if (CF) {
+		CF = bint::subT<N>(z, buf + N, p);
+		assert(CF == 1);
+		(void)CF;
+	} else {
+		if (bint::subT<N>(z, buf + N, p)) {
+			bint::copyT<N>(z, buf + N);
 		}
 	}
-	static const void3u f;
-};
+}
 
-template<size_t N, class Tag>
-const void3u MontRed<N, Tag>::f = MontRed<N, Tag>::func;
+// [return:z[N+1]] = z[N+1] + x[N] * y + (CF << (N * UnitBitSize))
+template<size_t N>
+Unit mulUnitAddWithCF(Unit z[N + 1], const Unit x[N], Unit y, Unit CF)
+{
+	Unit H = bint::mulUnitAddT<N>(z, x, y);
+	H += CF;
+	Unit v = z[N];
+	v += H;
+	z[N] = v;
+	return v < H;
+}
 
+template<size_t N>
+static void modRedNFT(Unit *z, const Unit *xy, const Unit *p)
+{
+	const Unit rp = p[-1];
+	Unit buf[N * 2];
+	bint::copyT<N * 2>(buf, xy);
+	Unit CF = 0;
+	for (size_t i = 0; i < N; i++) {
+		Unit q = buf[i] * rp;
+		CF = mulUnitAddWithCF<N>(buf + i, p, q, CF);
+	}
+	if (bint::subT<N>(z, buf + N, p)) {
+		bint::copyT<N>(z, buf + N);
+	}
+}
+
+// update z[N + 1]
+template<size_t N>
+static Unit mulUnitAddFull(Unit *z, const Unit *x, Unit y)
+{
+	Unit v1 = z[N];
+	Unit v2 = v1 + bint::mulUnitAddT<N>(z, x, y);
+	z[N] = v2;
+	return v2 < v1;
+}
 /*
 	z[N] <- Montgomery(x[N], y[N], p[N])
 	REMARK : assume p[-1] = rp
 */
-template<size_t N, bool isFullBit, class Tag = Gtag>
-struct Mont {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-#if MCL_MAX_BIT_SIZE == 1024 || MCL_SIZEOF_UNIT == 4 // check speed
-		Unit xy[N * 2];
-		MulPre<N, Tag>::f(xy, x, y);
-		MontRed<N, Tag>::f(z, xy, p);
-#else
-		const Unit rp = p[-1];
-		if (isFullBit) {
-			Unit buf[N * 2 + 2];
-			Unit *c = buf;
-			MulUnitPre<N, Tag>::f(c, x, y[0]); // x * y[0]
-			Unit q = c[0] * rp;
-			Unit t[N + 2];
-			MulUnitPre<N, Tag>::f(t, p, q); // p * q
-			t[N + 1] = 0; // always zero
-			c[N + 1] = AddPre<N + 1, Tag>::f(c, c, t);
-			c++;
-			for (size_t i = 1; i < N; i++) {
-				MulUnitPre<N, Tag>::f(t, x, y[i]);
-				c[N + 1] = AddPre<N + 1, Tag>::f(c, c, t);
-				q = c[0] * rp;
-				MulUnitPre<N, Tag>::f(t, p, q);
-				AddPre<N + 2, Tag>::f(c, c, t);
-				c++;
-			}
-			if (c[N]) {
-				SubPre<N, Tag>::f(z, c, p);
-			} else {
-				if (SubPre<N, Tag>::f(z, c, p)) {
-					memcpy(z, c, N * sizeof(Unit));
-				}
-			}
-		} else {
-			/*
-				R = 1 << 64
-				L % 64 = 63 ; not full bit
-				F = 1 << (L + 1)
-				max p = (1 << L) - 1
-				x, y <= p - 1
-				max x * y[0], p * q <= ((1 << L) - 1)(R - 1)
-				t = x * y[i] + p * q <= 2((1 << L) - 1)(R - 1) = (F - 2)(R - 1)
-				t >> 64 <= (F - 2)(R - 1)/R = (F - 2) - (F - 2)/R
-				t + (t >> 64) = (F - 2)R - (F - 2)/R < FR
-			*/
-			Unit carry;
-			(void)carry;
-			Unit buf[N * 2 + 1];
-			Unit *c = buf;
-			MulUnitPre<N, Tag>::f(c, x, y[0]); // x * y[0]
-			Unit q = c[0] * rp;
-			Unit t[N + 1];
-			MulUnitPre<N, Tag>::f(t, p, q); // p * q
-			carry = AddPre<N + 1, Tag>::f(c, c, t);
-			assert(carry == 0);
-			c++;
-			c[N] = 0;
-			for (size_t i = 1; i < N; i++) {
-				c[N + 1] = 0;
-				MulUnitPre<N, Tag>::f(t, x, y[i]);
-				carry = AddPre<N + 1, Tag>::f(c, c, t);
-				assert(carry == 0);
-				q = c[0] * rp;
-				MulUnitPre<N, Tag>::f(t, p, q);
-				carry = AddPre<N + 1, Tag>::f(c, c, t);
-				assert(carry == 0);
-				c++;
-			}
-			assert(c[N] == 0);
-			if (SubPre<N, Tag>::f(z, c, p)) {
-				memcpy(z, c, N * sizeof(Unit));
-			}
+template<size_t N>
+static void mulMontT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	const Unit rp = p[-1];
+	Unit buf[N * 2 + 1];
+	buf[N] = bint::mulUnitT<N>(buf, x, y[0]);
+	Unit q = buf[0] * rp;
+	buf[N + 1] = mulUnitAddFull<N>(buf, p, q);
+	for (size_t i = 1; i < N; i++) {
+		buf[N + 1 + i] = mulUnitAddFull<N>(buf + i, x, y[i]);
+		q = buf[i] * rp;
+		buf[N + 1 + i] += mulUnitAddFull<N>(buf + i, p, q);
+	}
+	if (buf[N + N]) {
+		bint::subT<N>(z, buf + N, p);
+	} else {
+		if (bint::subT<N>(z, buf + N, p)) {
+			bint::copyT<N>(z, buf + N);
 		}
+	}
+}
+
+#if 0 // #ifdef MCL_WASM32
+template<size_t N>
+uint64_t mulUnitLazyT(uint64_t *z, const Unit *x, Unit y)
+{
+#if 1
+	uint64_t y_ = y;
+	uint64_t H = x[0] * y_;
+	z[0] = uint32_t(H);
+	uint64_t Ls[N-1], Hs[N-1];
+	Hs[0] = H >> 32;
+	for (size_t i = 1; i < N - 1; i++) {
+		H = x[i] * y_;
+		Ls[i-1] = uint32_t(H);
+		Hs[i] = H >> 32;
+	}
+	H = x[N-1] * y_;
+	Ls[N-2] = uint32_t(H);
+#if 1
+	for (size_t i = 0; i < ((N - 1) & ~1); i += 2) {
+//		z[i+1] = Hs[i] + Ls[i];
+		v128_t vH = wasm_v128_load(&Hs[i]);
+		v128_t vL = wasm_v128_load(&Ls[i]);
+		wasm_v128_store(&z[i+1], wasm_i64x2_add(vH, vL));
+	}
+	if ((N & 1) == 0) {
+		z[N - 1] = Hs[N - 2] + Ls[N - 2];
+	}
+#else
+	for (size_t i = 0; i < N - 1; i++) {
+		z[i+1] = Hs[i] + Ls[i];
+	}
+#endif
+	return H >> 32;
+#else
+	uint64_t y_ = y;
+	uint64_t H = x[0] * y_;
+	z[0] = uint32_t(H);
+	for (size_t i = 1; i < N; i++) {
+		uint64_t v = x[i] * y_;
+		z[i] = uint32_t(v) + (H >> 32);
+		H = v;
+	}
+	return H >> 32;
+#endif
+}
+
+template<size_t N>
+uint64_t mulUnitAddLazyT(uint64_t *z, const Unit *x, Unit y)
+{
+#if 1
+	uint64_t y_ = y;
+	uint64_t H = x[0] * y_ + z[0];
+	z[0] = uint32_t(H);
+	uint64_t Ls[N-1], Hs[N-1];
+	Hs[0] = H >> 32;
+	for (size_t i = 1; i < N - 1; i++) {
+		H = x[i] * y_;
+		Ls[i-1] = uint32_t(H);
+		Hs[i] = H >> 32;
+	}
+	H = x[N-1] * y_;
+	Ls[N-2] = uint32_t(H);
+#if 1
+	for (size_t i = 0; i < ((N - 1) & ~1); i += 2) {
+		v128_t t = wasm_v128_load(&z[i+1]);
+		t = wasm_i64x2_add(t, wasm_v128_load(&Hs[i]));
+		t = wasm_i64x2_add(t, wasm_v128_load(&Ls[i]));
+		wasm_v128_store(&z[i+1], t);
+	}
+	if ((N & 1) == 0) {
+		z[N - 1] += Hs[N - 2] + Ls[N - 2];
+	}
+#else
+	for (size_t i = 0; i < N - 1; i++) {
+		z[i+1] += Hs[i] + Ls[i];
+	}
+#endif
+	return H >> 32;
+#else
+	uint64_t y_ = y;
+	uint64_t H = z[0] + x[0] * y_;
+	z[0] = uint32_t(H);
+	for (size_t i = 1; i < N; i++) {
+		uint64_t v = x[i] * y_;
+		z[i] = z[i] + uint32_t(v) + (H >> 32);
+		H = v;
+	}
+	return H >> 32;
+#endif
+}
+#endif
+
+template<size_t N>
+uint64_t mulUnitLazyT(uint64_t *z, const Unit *x, Unit y)
+{
+	uint64_t y_ = y;
+	uint64_t H = x[0] * y_;
+	z[0] = uint32_t(H);
+	for (size_t i = 1; i < N; i++) {
+		uint64_t v = x[i] * y_;
+		z[i] = uint32_t(v) + (H >> 32);
+		H = v;
+	}
+	return H >> 32;
+}
+
+template<size_t N>
+uint64_t mulUnitAddLazyT(uint64_t *z, const Unit *x, Unit y)
+{
+	uint64_t y_ = y;
+	uint64_t H = z[0] + x[0] * y_;
+	z[0] = uint32_t(H);
+	for (size_t i = 1; i < N; i++) {
+		uint64_t v = x[i] * y_;
+		z[i] = z[i] + uint32_t(v) + (H >> 32);
+		H = v;
+	}
+	return H >> 32;
+}
+
+/*
+	r = bint::mulUnitAddT<N>(z, x, *y);
+	q = z[0] * rp;
+	r += bint::mulUnitAddT<N>(z, p, q);
+	return r;
+*/
+template<size_t N>
+uint64_t mulUnitAddLazy2T(uint64_t *z, const Unit *x, Unit y, const Unit *p, Unit rp)
+{
+	uint64_t y_ = y;
+	uint64_t H1 = z[0] + x[0] * y_;
+	uint64_t t = uint32_t(H1);
+	uint64_t q = uint32_t(t * rp);
+	uint64_t H2 = t + p[0] * q;
+	assert(uint32_t(H2) == 0);
+//	z[0] = uint32_t(H2); // set is unnecessary because it must be zero
+	for (size_t i = 1; i < N; i++) {
+		t = z[i];
+		t += H1 >> 32;
+		H1 = x[i] * y_;
+		t += uint32_t(H1);
+		t += H2 >> 32;
+		H2 = p[i] * q;
+		t += uint32_t(H2);
+		z[i] = t;
+	}
+	return (H1 >> 32) + (H2 >> 32);
+}
+
+template<size_t N>
+static void mulMontNFT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	const Unit rp = p[-1];
+	/*
+		R = 1 << 64
+		L % 64 = 63 ; not full bit
+		F = 1 << (L + 1)
+		max p = (1 << L) - 1
+		x, y <= p - 1
+		max x * y[0], p * q <= ((1 << L) - 1)(R - 1)
+		t = x * y[i] + p * q <= 2((1 << L) - 1)(R - 1) = (F - 2)(R - 1)
+		t >> 64 <= (F - 2)(R - 1)/R = (F - 2) - (F - 2)/R
+			t + (t >> 64) = (F - 2)R - (F - 2)/R < FR
+	*/
+#if 0 // #ifdef MCL_WASM32
+	// use uint64_t if Unit = uint32_t to reduce conversion
+	uint64_t buf[N * 2];
+	buf[N] = mulUnitLazyT<N>(buf, x, y[0]);
+	Unit q = buf[0] * rp;
+	buf[N] += mulUnitAddLazyT<N>(buf, p, q);
+	for (size_t i = 1; i < N; i++) {
+#if 1
+		buf[N + i] = mulUnitAddLazy2T<N>(buf + i, x, y[i], p, rp);
+#else
+		buf[N + i] = mulUnitAddLazyT<N>(buf + i, x, y[i]);
+		q = buf[i] * rp;
+		buf[N + i] += mulUnitAddLazyT<N>(buf + i, p, q);
 #endif
 	}
-	static const void4u f;
-};
-
-template<size_t N, bool isFullBit, class Tag>
-const void4u Mont<N, isFullBit, Tag>::f = Mont<N, isFullBit, Tag>::func;
+	uint64_t H = 0;
+	for (size_t i = N; i < N*2; i++) {
+		uint64_t v = buf[i] + (H >> 32);
+		buf[i] = uint32_t(v);
+		H = v;
+	}
+	if (bint::subT<N>(z, buf + N, p)) {
+		bint::copyT<N>(z, buf + N);
+	}
+#else
+#ifdef MCL_WASM32
+	// use uint64_t if Unit = uint32_t to reduce conversion
+	uint64_t buf[N * 2];
+#else
+	Unit buf[N * 2];
+#endif
+	buf[N] = bint::mulUnitT<N>(buf, x, y[0]);
+	Unit q = buf[0] * rp;
+	buf[N] += bint::mulUnitAddT<N>(buf, p, q);
+	for (size_t i = 1; i < N; i++) {
+		buf[N + i] = bint::mulUnitAddT<N>(buf + i, x, y[i]);
+		q = buf[i] * rp;
+		buf[N + i] += bint::mulUnitAddT<N>(buf + i, p, q);
+	}
+	if (bint::subT<N>(z, buf + N, p)) {
+		bint::copyT<N>(z, buf + N);
+	}
+#endif
+}
 
 // z[N] <- Montgomery(x[N], x[N], p[N])
-template<size_t N, bool isFullBit, class Tag = Gtag>
-struct SqrMont {
-	static inline void func(Unit *y, const Unit *x, const Unit *p)
-	{
-#if MCL_MAX_BIT_SIZE == 1024 || MCL_SIZEOF_UNIT == 4 // check speed
-		Unit xx[N * 2];
-		SqrPre<N, Tag>::f(xx, x);
-		MontRed<N, Tag>::f(y, xx, p);
-#else
-		Mont<N, isFullBit, Tag>::f(y, x, x, p);
-#endif
-	}
-	static const void3u f;
-};
-template<size_t N, bool isFullBit, class Tag>
-const void3u SqrMont<N, isFullBit, Tag>::f = SqrMont<N, isFullBit, Tag>::func;
+template<size_t N>
+static void sqrMontT(Unit *y, const Unit *x, const Unit *p)
+{
+	mulMontT<N>(y, x, x, p);
+}
+
+template<size_t N>
+static void sqrMontNFT(Unit *y, const Unit *x, const Unit *p)
+{
+	mulMontNFT<N>(y, x, x, p);
+}
 
 // z[N] <- (x[N] * y[N]) % p[N]
-template<size_t N, class Tag = Gtag>
-struct Mul {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		Unit xy[N * 2];
-		MulPre<N, Tag>::f(xy, x, y);
-		Dbl_Mod<N, Tag>::f(z, xy, p);
-	}
-	static const void4u f;
-};
-template<size_t N, class Tag>
-const void4u Mul<N, Tag>::f = Mul<N, Tag>::func;
+template<size_t N>
+static void mulModT(Unit *z, const Unit *x, const Unit *y, const Unit *p)
+{
+	Unit xy[N * 2];
+	bint::mulT<N>(xy, x, y);
+	fpDblModT<N>(z, xy, p);
+}
 
 // y[N] <- (x[N] * x[N]) % p[N]
-template<size_t N, class Tag = Gtag>
-struct Sqr {
-	static inline void func(Unit *y, const Unit *x, const Unit *p)
-	{
-		Unit xx[N * 2];
-		SqrPre<N, Tag>::f(xx, x);
-		Dbl_Mod<N, Tag>::f(y, xx, p);
-	}
-	static const void3u f;
-};
-template<size_t N, class Tag>
-const void3u Sqr<N, Tag>::f = Sqr<N, Tag>::func;
-
-template<size_t N, class Tag = Gtag>
-struct Fp2MulNF {
-	static inline void func(Unit *z, const Unit *x, const Unit *y, const Unit *p)
-	{
-		const Unit *const a = x;
-		const Unit *const b = x + N;
-		const Unit *const c = y;
-		const Unit *const d = y + N;
-		Unit d0[N * 2];
-		Unit d1[N * 2];
-		Unit d2[N * 2];
-		Unit s[N];
-		Unit t[N];
-		AddPre<N, Tag>::f(s, a, b);
-		AddPre<N, Tag>::f(t, c, d);
-		MulPre<N, Tag>::f(d0, s, t);
-		MulPre<N, Tag>::f(d1, a, c);
-		MulPre<N, Tag>::f(d2, b, d);
-		SubPre<N * 2, Tag>::f(d0, d0, d1);
-		SubPre<N * 2, Tag>::f(d0, d0, d2);
-		MontRed<N, Tag>::f(z + N, d0, p);
-		DblSub<N, Tag>::f(d1, d1, d2, p);
-		MontRed<N, Tag>::f(z, d1, p);
-	}
-	static const void4u f;
-};
-template<size_t N, class Tag>
-const void4u Fp2MulNF<N, Tag>::f = Fp2MulNF<N, Tag>::func;
+template<size_t N>
+static void sqrModT(Unit *y, const Unit *x, const Unit *p)
+{
+	Unit xx[N * 2];
+	bint::sqrT<N>(xx, x);
+	fpDblModT<N>(y, xx, p);
+}
 
 } } // mcl::fp
 

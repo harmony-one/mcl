@@ -9,9 +9,8 @@ typedef mcl::FpT<mcl::FpTag> Fp;
 typedef mcl::Fp2T<Fp> Fp2;
 typedef mcl::FpDblT<Fp> FpDbl;
 typedef mcl::Fp6T<Fp> Fp6;
-typedef mcl::Fp12T<Fp> Fp12;
 
-typedef mcl::fp::Unit Unit;
+typedef mcl::Unit Unit;
 
 void mul9(const mcl::fp::Op& op, Unit *y, const Unit *x, const Unit *p)
 {
@@ -46,7 +45,6 @@ void benchRaw(const char *p, mcl::fp::Mode mode)
 	double fp_mulUnitT;
 	double mul9T;
 	double fp_mulUnitPreT;
-	double fpN1_modT;
 	double fpDbl_addT, fpDbl_subT;
 	double fpDbl_sqrPreT, fpDbl_mulPreT, fpDbl_modT;
 	double fp2_sqrT, fp2_mulT;
@@ -59,7 +57,6 @@ void benchRaw(const char *p, mcl::fp::Mode mode)
 	CYBOZU_BENCH_T(fp_mulUnitT, op.fp_mulUnit, uz, ux, 9, op.p);
 	CYBOZU_BENCH_T(mul9T, mul9, op, uz, ux, op.p);
 	CYBOZU_BENCH_T(fp_mulUnitPreT, op.fp_mulUnitPre, ux, ux, 9);
-	CYBOZU_BENCH_T(fpN1_modT, op.fpN1_mod, ux, uy, op.p);
 	CYBOZU_BENCH_T(fpDbl_addT, op.fpDbl_add, uz, ux, uy, op.p);
 	CYBOZU_BENCH_T(fpDbl_subT, op.fpDbl_sub, uz, uy, ux, op.p);
 	CYBOZU_BENCH_T(fpDbl_sqrPreT, op.fpDbl_sqrPre, uz, ux);
@@ -79,7 +76,6 @@ void benchRaw(const char *p, mcl::fp::Mode mode)
 		"mulUnit",
 		"mul9",
 		"mulUnitP",
-		"fpN1_mod",
 		"D_add", "D_sub",
 		"D_sqrPre", "D_mulPre", "D_mod",
 		"fp2_sqr", "fp2_mul",
@@ -95,7 +91,6 @@ void benchRaw(const char *p, mcl::fp::Mode mode)
 		fp_mulUnitT,
 		mul9T,
 		fp_mulUnitPreT,
-		fpN1_modT,
 		fpDbl_addT, fpDbl_subT,
 		fpDbl_sqrPreT, fpDbl_mulPreT, fpDbl_modT,
 		fp2_sqrT, fp2_mulT,
@@ -142,16 +137,22 @@ int main(int argc, char *argv[])
 		// N = 5
 		"0x80000000000000000000000000000000000000000000000000000000000000000000000000000009",
 		"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff3b",
+#if MCL_MAX_BIT_SIZE >= 384
 		// N = 6
 		"0x800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000171",
 		"0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec3",
+#endif
+#if MCL_MAX_BIT_SIZE >= 448
 		// N = 7
 		"0x8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000063",
 		"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff35",
+#endif
+#if MCL_MAX_BIT_SIZE >= 512
 		// N = 8
 		"0x8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006f",
 		"0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdc7",
-#if MCL_MAX_BIT_SIZE == 1024
+#endif
+#if MCL_MAX_BIT_SIZE == 1024 // it is necessary to modify parameter of src/gen*
 		"0xc70b1ddda9b96e3965e5855942aa5852d8f8e052c760ac32cdfec16a2ed3d56981e1a475e20a70144ed2f5061ba64900f69451492803f815d446ee133d0668f7a7f3276d6301c95ce231f0e4b0d0f3882f10014fca04454cff55d2e2d4cfc1aad33b8d38397e2fc8b623177e63d0b783269c40a85b8f105654783b8ed2e737df",
 		"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff97",
 #endif
@@ -168,7 +169,7 @@ int main(int argc, char *argv[])
 		benchRaw(tbl[i], mcl::fp::FP_LLVM);
 		benchRaw(tbl[i], mcl::fp::FP_LLVM_MONT);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		if (bitSize <= 384) {
 			benchRaw(tbl[i], mcl::fp::FP_XBYAK);
 		}

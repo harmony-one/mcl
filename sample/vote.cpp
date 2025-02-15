@@ -16,10 +16,10 @@
 #include <mcl/elgamal.hpp>
 #include <mcl/ecparam.hpp>
 
-typedef mcl::FpT<> Fp;
-typedef mcl::FpT<mcl::ZnTag> Zn; // use ZnTag because Zn is different class with Fp
-typedef mcl::EcT<Fp> Ec;
-typedef mcl::ElgamalT<Ec, Zn> Elgamal;
+typedef mcl::FpT<mcl::FpTag> Fp;
+typedef mcl::FpT<mcl::ZnTag> Zn;
+typedef mcl::EcT<Fp, Zn> Ec;
+typedef mcl::ElgamalT<Ec> Elgamal;
 
 cybozu::RandomGenerator rg;
 
@@ -59,10 +59,7 @@ struct Param {
 
 void SysInit()
 {
-	const mcl::EcParam& para = mcl::ecparam::secp192k1;
-	Zn::init(para.n);
-	Fp::init(para.p);
-	Ec::init(para.a, para.b);
+	mcl::initCurve<Ec>(MCL_SECP192K1);
 }
 
 template<class T>

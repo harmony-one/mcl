@@ -13,13 +13,26 @@
 #ifndef CYBOZU_DONT_USE_STRING
 #include <string>
 #endif
+#include <memory.h>
 
 #ifdef CYBOZU_USE_OPENSSL_SHA
+
+#ifndef CYBOZU_USE_OPENSSL_NEW_HASH
+#ifndef _MSC_VER
+#define CYBOZU_USE_OPENSSL_NEW_HASH 1
+#endif
+#endif
+
 #ifdef __APPLE__
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+#include <openssl/evp.h>
+#include <assert.h>
+#else
 #include <openssl/sha.h>
+#endif
 #ifdef _MSC_VER
 	#include <cybozu/link_libeay32.hpp>
 #endif
@@ -30,27 +43,90 @@
 
 namespace cybozu {
 
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+namespace local {
+
+template<size_t MD_SIZE_>
+struct NewHash {
+	static const size_t MD_SIZE = MD_SIZE_;
+	EVP_MD_CTX *mdctx_;
+	const EVP_MD *md_;
+	explicit NewHash(const char *name)
+		: mdctx_(EVP_MD_CTX_new())
+		, md_(EVP_get_digestbyname(name))
+	{
+		if (md_ == 0) {
+			fprintf(stderr, "fatal error NewHash %s\n", name);
+		}
+		assert(md_);
+	}
+	~NewHash()
+	{
+		EVP_MD_CTX_free(mdctx_);
+	}
+	void clear()
+	{
+		EVP_MD_CTX_reset(mdctx_);
+		EVP_DigestInit_ex(mdctx_, md_, NULL);
+	}
+	void update(const void *buf, size_t bufSize)
+	{
+		EVP_DigestUpdate(mdctx_, buf, bufSize);
+	}
+	size_t digest(void *md, size_t mdSize, const void *buf, size_t bufSize)
+	{
+		if (mdSize < MD_SIZE) return 0;
+		update(buf, bufSize);
+		unsigned int len;
+		EVP_DigestFinal_ex(mdctx_, (unsigned char*)md, &len);
+		assert(len == MD_SIZE);
+		return MD_SIZE;
+	}
+};
+
+} // local
+#endif
+
 class Sha256 {
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+	local::NewHash<32> ctx_;
+#else
 	SHA256_CTX ctx_;
+#endif
 public:
 	Sha256()
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		: ctx_("sha256")
+#endif
 	{
 		clear();
 	}
 	void clear()
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		ctx_.clear();
+#else
 		SHA256_Init(&ctx_);
+#endif
 	}
 	void update(const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		ctx_.update(buf, bufSize);
+#else
 		SHA256_Update(&ctx_, buf, bufSize);
+#endif
 	}
 	size_t digest(void *md, size_t mdSize, const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		return ctx_.digest(md, mdSize, buf, bufSize);
+#else
 		if (mdSize < SHA256_DIGEST_LENGTH) return 0;
 		update(buf, bufSize);
 		SHA256_Final(reinterpret_cast<uint8_t*>(md), &ctx_);
 		return SHA256_DIGEST_LENGTH;
+#endif
 	}
 #ifndef CYBOZU_DONT_USE_STRING
 	void update(const std::string& buf)
@@ -63,7 +139,11 @@ public:
 	}
 	std::string digest(const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		std::string md(ctx_.MD_SIZE, 0);
+#else
 		std::string md(SHA256_DIGEST_LENGTH, 0);
+#endif
 		digest(&md[0], md.size(), buf, bufSize);
 		return md;
 	}
@@ -71,26 +151,45 @@ public:
 };
 
 class Sha512 {
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+	local::NewHash<64> ctx_;
+#else
 	SHA512_CTX ctx_;
+#endif
 public:
 	Sha512()
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		: ctx_("sha512")
+#endif
 	{
 		clear();
 	}
 	void clear()
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		ctx_.clear();
+#else
 		SHA512_Init(&ctx_);
+#endif
 	}
 	void update(const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		ctx_.update(buf, bufSize);
+#else
 		SHA512_Update(&ctx_, buf, bufSize);
+#endif
 	}
 	size_t digest(void *md, size_t mdSize, const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		return ctx_.digest(md, mdSize, buf, bufSize);
+#else
 		if (mdSize < SHA512_DIGEST_LENGTH) return 0;
 		update(buf, bufSize);
 		SHA512_Final(reinterpret_cast<uint8_t*>(md), &ctx_);
 		return SHA512_DIGEST_LENGTH;
+#endif
 	}
 #ifndef CYBOZU_DONT_USE_STRING
 	void update(const std::string& buf)
@@ -103,7 +202,11 @@ public:
 	}
 	std::string digest(const void *buf, size_t bufSize)
 	{
+#if CYBOZU_USE_OPENSSL_NEW_HASH == 1
+		std::string md(ctx_.MD_SIZE, 0);
+#else
 		std::string md(SHA512_DIGEST_LENGTH, 0);
+#endif
 		digest(&md[0], md.size(), buf, bufSize);
 		return md;
 	}
@@ -468,3 +571,38 @@ public:
 } // cybozu
 
 #endif
+
+namespace cybozu {
+
+/*
+	HMAC-SHA-256
+	hmac must have 32 bytes buffer
+*/
+inline void hmac256(void *hmac, const void *key, size_t keySize, const void *msg, size_t msgSize)
+{
+	const uint8_t ipad = 0x36;
+	const uint8_t opad = 0x5c;
+	uint8_t k[64];
+	Sha256 hash;
+	if (keySize > 64) {
+		hash.digest(k, 32, key, keySize);
+		hash.clear();
+		keySize = 32;
+	} else {
+		memcpy(k, key, keySize);
+	}
+	for (size_t i = 0; i < keySize; i++) {
+		k[i] = k[i] ^ ipad;
+	}
+	memset(k + keySize, ipad, 64 - keySize);
+	hash.update(k, 64);
+	hash.digest(hmac, 32, msg, msgSize);
+	hash.clear();
+	for (size_t i = 0; i < 64; i++) {
+		k[i] = k[i] ^ (ipad ^ opad);
+	}
+	hash.update(k, 64);
+	hash.digest(hmac, 32, hmac, 32);
+}
+
+} // cybozu

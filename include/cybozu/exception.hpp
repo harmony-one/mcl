@@ -42,7 +42,9 @@ public:
 #include <errno.h>
 #include <stdio.h>
 #ifdef _WIN32
-	#include <winsock2.h>
+	#ifndef WIN32_LEAN_AND_MEAN
+		#define WIN32_LEAN_AND_MEAN
+	#endif
 	#include <windows.h>
 #else
 	#include <string.h> // for strerror_r
@@ -201,7 +203,6 @@ public:
 	}
 	/**
 		convert NativeErrNo to string(maybe UTF8)
-		@param err [in] errno
 		@note Linux   : same as ConvertErrorNoToString
 			  Windows : for Win32 API(use en-us)
 	*/

@@ -13,6 +13,8 @@ cybozu::CpuClock clk;
 
 using namespace mcl::bls12;
 
+#include "common_test.hpp"
+
 mcl::fp::Mode g_mode;
 
 const struct TestSet {
@@ -102,7 +104,7 @@ void pairingC(Fp12& e, const G1& P, const G2& Q)
 void testIoAll(const G1& P, const G2& Q)
 {
 	const int FpTbl[] = { 0, 2, 2|mcl::IoPrefix, 10, 16, 16|mcl::IoPrefix, mcl::IoArray, mcl::IoArrayRaw };
-	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize };
+	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize, mcl::IoEcAffineSerialize };
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(FpTbl); i++) {
 		for (size_t j = 0; j < CYBOZU_NUM_OF_ARRAY(EcTbl); j++) {
 			G1 P2 = P, P3;
@@ -312,6 +314,7 @@ void deserializeAndSerialize(const T& x)
 {
 	char buf[1024];
 	size_t n = x.serialize(buf, sizeof(buf));
+	CYBOZU_TEST_EQUAL(n, T::getSerializedByteSize());
 	CYBOZU_TEST_ASSERT(n > 0);
 	T y;
 	CYBOZU_TEST_EQUAL(y.deserialize(buf, n), n);
@@ -356,6 +359,32 @@ void testSerialize(const G1& P, const G2& Q)
 
 #include "bench.hpp"
 
+void testMulVec()
+{
+	puts("testMulVec");
+	const size_t n = 8192;
+	cybozu::XorShift rg;
+	std::vector<G1> Pvec(n);
+	std::vector<Fr> xVec(n);
+	hashAndMapToG1(Pvec[0], "abc", 3);
+	for (size_t i = 1; i < n; i++) {
+		G1::add(Pvec[i], Pvec[i-1], Pvec[0]);
+	}
+	for (size_t i = 0; i < n; i++) {
+		xVec[i].setByCSPRNG(rg);
+	}
+	G1 P;
+	G1 P8191;
+	P8191.setStr("1 c252fef934098904eca8e3fbd9cc8c78877e434d9ce01e424ef07302cec5652dc17d341b8abd4278255a75718cebd67 17455f24f76e7e7d1dd3231d8f144a40decc40d5b129734879b8aad4a209a2e6d83d8256221e46aaf8205e254355d9ad", 16);
+	G1 P8192;
+	P8192.setStr("1 f0d44ba84af56d1db97f46660bfd12401aae239a6650cdfc168158d1076d68c5149ac3a311b9c058ad4e61ad1b8063 b2240da1e42c5f469ccf818e58901aca2283d1bd29565f5efbfa14e48cdae199c7a7981b958bfec332f6e613cf36990", 16);
+	G1::mulVec(P, Pvec.data(), xVec.data(), n-1);
+	CYBOZU_TEST_EQUAL(P, P8191);
+	G1::mulVec(P, Pvec.data(), xVec.data(), n);
+	CYBOZU_TEST_EQUAL(P, P8192);
+}
+
+
 CYBOZU_TEST_AUTO(naive)
 {
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(g_testSetTbl); i++) {
@@ -372,6 +401,8 @@ CYBOZU_TEST_AUTO(naive)
 		clk.put();
 		return;
 #endif
+		testLagrange();
+		testMulVec();
 		testSerialize(P, Q);
 		testParam(ts);
 		testIo(P, Q);
@@ -383,6 +414,7 @@ CYBOZU_TEST_AUTO(naive)
 		testPairing(P, Q, ts.e);
 		testPrecomputed(P, Q);
 		testMillerLoop2(P, Q);
+		testCommon(P, Q);
 		testBench(P, Q);
 	}
 	int count = (int)clk.getCount();
@@ -428,9 +460,14 @@ const char *e1Str =
 	finalExp(e2, e0);
 //	finalExpC(e2, e0);
 	CYBOZU_TEST_EQUAL(e1, e2);
+#ifndef NDEBUG
+	puts("skip bench of finalExp in debug");
+	return;
+#endif
 	CYBOZU_BENCH_C("finalExp", 100, finalExp, e2, e0);
 }
 
+#if 0 // test for only Proj
 CYBOZU_TEST_AUTO(addLine)
 {
 const char *l0Str=
@@ -566,6 +603,7 @@ const char *q1Str =
 	CYBOZU_TEST_EQUAL(Q, Q1);
 	G1::setOrder(BN::param.r);
 }
+#endif
 
 CYBOZU_TEST_AUTO(mul_012)
 {
@@ -680,28 +718,203 @@ void testCurve(const mcl::CurveParam& cp)
 }
 CYBOZU_TEST_AUTO(multi)
 {
+#ifndef NDEBUG
+	puts("skip multi in debug");
+	return;
+#endif
 	G1 P;
 	G2 Q;
 	int i;
+
+#ifndef MCL_STATIC_CODE
 	puts("BN254");
 	testCurve(mcl::BN254);
 	i = 1;
 	CYBOZU_BENCH_C("calcBN1", 100, (BN::param.mapTo.calcBN<G1, Fp>), P, i++);
-	CYBOZU_BENCH_C("naiveG2", 100, (BN::param.mapTo.naiveMapTo<G1, Fp>), P, i++);
+	CYBOZU_BENCH_C("naiveG2", 100, (mcl::ec::tryAndIncMapTo<G1>), P, i++);
 	CYBOZU_BENCH_C("calcBN2", 100, (BN::param.mapTo.calcBN<G2, Fp2>), Q, i++);
-	CYBOZU_BENCH_C("naiveG2", 100, (BN::param.mapTo.naiveMapTo<G2, Fp2>), Q, i++);
+	CYBOZU_BENCH_C("naiveG2", 100, (mcl::ec::tryAndIncMapTo<G2>), Q, i++);
+#endif
 	puts("BLS12_381");
 	testCurve(mcl::BLS12_381);
 	i = 1;
 	CYBOZU_BENCH_C("calcBN1", 100, (BN::param.mapTo.calcBN<G1, Fp>), P, i++);
-	CYBOZU_BENCH_C("naiveG1", 100, (BN::param.mapTo.naiveMapTo<G1, Fp>), P, i++);
+	CYBOZU_BENCH_C("naiveG1", 100, (mcl::ec::tryAndIncMapTo<G1>), P, i++);
 	CYBOZU_BENCH_C("calcBN2", 100, (BN::param.mapTo.calcBN<G2, Fp2>), Q, i++);
-	CYBOZU_BENCH_C("naiveG2", 100, (BN::param.mapTo.naiveMapTo<G2, Fp2>), Q, i++);
+	CYBOZU_BENCH_C("naiveG2", 100, (mcl::ec::tryAndIncMapTo<G2>), Q, i++);
 }
 
-CYBOZU_TEST_AUTO(BLS12_G1mulCofactor)
+CYBOZU_TEST_AUTO(deserialize)
 {
 	if (BN::param.cp.curveType != MCL_BLS12_381) return;
+	G1 P;
+	G2 Q;
+	mapToG1(P, 5);
+	mapToG2(Q, 5);
+	char buf1[128];
+	char buf2[128];
+	size_t n1 = P.serialize(buf1, sizeof(buf1));
+	CYBOZU_TEST_ASSERT(n1 > 0);
+	CYBOZU_TEST_EQUAL(P.deserialize(buf1, n1), n1);
+	size_t n2 = Q.serialize(buf2, sizeof(buf2));
+	CYBOZU_TEST_ASSERT(n2 > 0);
+	CYBOZU_TEST_EQUAL(Q.deserialize(buf2, n2), n2);
+#ifndef NDEBUG
+	puts("skip bench in debug");
+	return;
+#endif
+	for (int i = 0; i < 2; i++) {
+		bool doVerify = i == 0;
+		printf("verifyOrder(%d)\n", doVerify);
+		verifyOrderG1(doVerify);
+		verifyOrderG2(doVerify);
+		CYBOZU_BENCH_C("deserializeG1", 1000, P.deserialize, buf1, n1);
+		CYBOZU_BENCH_C("deserializeG2", 1000, Q.deserialize, buf2, n2);
+	}
+}
+
+CYBOZU_TEST_AUTO(verifyG1)
+{
+	const char *ok_x = "ad50e39253e0de4fad89440f01f1874c8bc91fdcd59ad66162984b10690e51ccf4d95e4222df14549d745d8b971199";
+	const char *ok_y = "2f76c6f3a006f0bbfb88c02a4643702ff52ff34c1fcb59af611b7f1cf47938ffbf2c68a6e31a40bf668544087374f70";
+
+	const char *ng_x = "1534fc82e2566c826b195314b32bf47576c24632444450d701de2601cec0c0d6b6090e7227850005e81f54039066602b";
+	const char *ng_y = "15899715142d265027d1a9fba8f2f10a3f21938071b4bbdb5dce8c5caa0d93588482d33d9a62bcbbd23ab6af6d689710";
+
+	Fp x, y;
+	G1 P, Q;
+	char buf[128];
+	size_t n;
+	P.x.setStr(ok_x, 16);
+	P.y.setStr(ok_y, 16);
+	P.z = 1;
+
+	// valid point, valid order
+	verifyOrderG1(false);
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(P.isValidOrder());
+	n = P.serialize(buf, sizeof(buf));
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0);
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	verifyOrderG1(true);
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(P.isValidOrder());
+	Q.clear();
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0);
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	// invalid point
+	P.z = 2;
+	CYBOZU_TEST_ASSERT(!P.isValid());
+
+	// valid point, invalid order
+	verifyOrderG1(false);
+	P.x.setStr(ng_x, 16);
+	P.y.setStr(ng_y, 16);
+	P.z = 1;
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(!P.isValidOrder());
+	n = P.serialize(buf, sizeof(buf));
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0); // success because of no-check the order
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	verifyOrderG1(true);
+	CYBOZU_TEST_ASSERT(!P.isValid()); // fail because of invalid order
+	Q.clear();
+	n = Q.deserialize(buf, n); // fail because of invalid order
+	CYBOZU_TEST_ASSERT(n == 0);
+}
+
+CYBOZU_TEST_AUTO(verifyG2)
+{
+	const char *ok_x = "1400ddb63494b2f3717d8706a834f928323cef590dd1f2bc8edaf857889e82c9b4cf242324526c9045bc8fec05f98fe9 14b38e10fd6d2d63dfe704c3f0b1741474dfeaef88d6cdca4334413320701c74e5df8c7859947f6901c0a3c30dba23c9";
+	const char *ok_y = "187452296c28d5206880d2a86e8c7fc79df88e20b906a1fc1d5855da6b2b4ae6f8c83a591e2e5350753d2d7fe3c7b4 9c205210f33e9cdaaa4630b3f6fad29744224e5100456973fcaf031cdbce8ad3f71d42af3f7733a3985d3a3d2f4be53";
+
+	const char *ng_x = "717f18d36bd40d090948f2d4dac2a03f6469d234f4beb75f67e66d51ea5540652189c61d01d1cfe3f5e9318e48bdf8a 13fc0389cb74ad6c8875c34f85e2bb93ca1bed48c14f2dd0f5cd741853014fe278c9551a9ac5850f678a423664f8287f";
+	const char *ng_y = "5412e6cef6b7189f31810c0cbac6b6350b18691be1fefed131a033f2df393b9c3a423c605666226c1efa833de11363b 101ed6eafbf85be7273ec5aec3471aa2c1018d7463cc48dfe9a7c872a7745e81317c88ce0c89a9086975feb4a2749074";
+
+	Fp x, y;
+	G2 P, Q;
+	char buf[128];
+	size_t n;
+	P.x.setStr(ok_x, 16);
+	P.y.setStr(ok_y, 16);
+	P.z = 1;
+
+	// valid point, valid order
+	verifyOrderG2(false);
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(P.isValidOrder());
+	n = P.serialize(buf, sizeof(buf));
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0);
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	verifyOrderG2(true);
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(P.isValidOrder());
+	Q.clear();
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0);
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	// invalid point
+	P.z = 2;
+	CYBOZU_TEST_ASSERT(!P.isValid());
+
+	// valid point, invalid order
+	verifyOrderG2(false);
+	P.x.setStr(ng_x, 16);
+	P.y.setStr(ng_y, 16);
+	P.z = 1;
+	CYBOZU_TEST_ASSERT(P.isValid());
+	CYBOZU_TEST_ASSERT(!P.isValidOrder());
+	n = P.serialize(buf, sizeof(buf));
+	n = Q.deserialize(buf, n);
+	CYBOZU_TEST_ASSERT(n > 0); // success because of no-check the order
+	CYBOZU_TEST_EQUAL(P, Q);
+
+	verifyOrderG2(true);
+	CYBOZU_TEST_ASSERT(!P.isValid()); // fail because of invalid order
+	Q.clear();
+	n = Q.deserialize(buf, n); // fail because of invalid order
+	CYBOZU_TEST_ASSERT(n == 0);
+}
+
+void splitTest(const mpz_class& mx, const mpz_class& L)
+{
+	mcl::Unit x[4], a[2], b[2];
+	mcl::gmp::getArray(x, 4, mx);
+	mcl::ec::local::optimizedSplitRawForBLS12_381(a, b, x);
+	mpz_class ma, mb;
+	mcl::gmp::setArray(ma, a, 2);
+	mcl::gmp::setArray(mb, b, 2);
+	CYBOZU_TEST_EQUAL(mb, mx / L);
+	CYBOZU_TEST_EQUAL(ma, mx % L);
+}
+
+CYBOZU_TEST_AUTO(split)
+{
+	const char *Ls = "ac45a4010001a40200000000ffffffff";
+	mpz_class L;
+	mcl::gmp::setStr(L, Ls, 16);
+	cybozu::XorShift rg;
+	Fr x;
+	for (int i = 0; i < 100; i++) {
+		x.setByCSPRNG(rg);
+		splitTest(x.getMpz(), L);
+	}
+	const mpz_class LL = L*L;
+	const mpz_class tbl[] = {
+		0, 1, 2, 3, L-1, L, L+1, L*2, L*2-1, L*2+1, LL-L, LL-1, LL+1, LL+L-2, LL+L-1, LL+L,
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		splitTest(tbl[i], L);
+	}
 }
 
 typedef std::vector<Fp> FpVec;
@@ -723,7 +936,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	g_mode = mcl::fp::StrToMode(mode);
+#ifdef MCL_STATIC_CODE
+	printf("static code for BLS12-381\n");
+#else
 	printf("JIT %d\n", mcl::fp::isEnableJIT());
+#endif
 #if 0
 	initPairing(mcl::BLS12_381);
 	cybozu::XorShift rg;

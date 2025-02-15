@@ -6,6 +6,7 @@
 	@license modified new BSD license
 	http://opensource.org/licenses/BSD-3-Clause
 */
+#include <mcl/config.hpp>
 #ifndef CYBOZU_DONT_USE_STRING
 #include <iosfwd>
 #endif
@@ -38,13 +39,6 @@ struct ZnTag;
 
 namespace fp {
 
-// copy src to dst as little endian
-void copyUnitToByteAsLE(uint8_t *dst, const Unit *src, size_t byteSize);
-// copy src to dst as little endian
-void copyByteToUnitAsLE(Unit *dst, const uint8_t *src, size_t byteSize);
-
-bool copyAndMask(Unit *y, const void *x, size_t xByteSize, const Op& op, MaskMode maskMode);
-
 uint64_t getUint64(bool *pb, const fp::Block& b);
 int64_t getInt64(bool *pb, fp::Block& b, const fp::Op& op);
 
@@ -59,27 +53,20 @@ inline Mode StrToMode(const std::string& s)
 }
 #endif
 
-inline void dumpUnit(Unit x)
-{
-#if MCL_SIZEOF_UNIT == 4
-	printf("%08x", (uint32_t)x);
-#else
-	printf("%016llx", (unsigned long long)x);
-#endif
-}
-
 bool isEnableJIT(); // 1st call is not threadsafe
 
 uint32_t sha256(void *out, uint32_t maxOutSize, const void *msg, uint32_t msgSize);
 uint32_t sha512(void *out, uint32_t maxOutSize, const void *msg, uint32_t msgSize);
 
+// draft-07 outSize = 128 or 256
+void expand_message_xmd(uint8_t out[], size_t outSize, const void *msg, size_t msgSize, const void *dst, size_t dstSize);
+
 namespace local {
 
-inline void byteSwap(void *x, size_t n)
+inline void byteSwap(uint8_t *x, size_t n)
 {
-	char *p = (char *)x;
 	for (size_t i = 0; i < n / 2; i++) {
-		fp::swap_(p[i], p[n - 1 - i]);
+		fp::swap_(x[i], x[n - 1 - i]);
 	}
 }
 
@@ -90,21 +77,43 @@ inline void byteSwap(void *x, size_t n)
 template<class tag = FpTag, size_t maxBitSize = MCL_MAX_BIT_SIZE>
 class FpT : public fp::Serializable<FpT<tag, maxBitSize>,
 	fp::Operator<FpT<tag, maxBitSize> > > {
-	typedef fp::Unit Unit;
 	typedef fp::Operator<FpT<tag, maxBitSize> > Operator;
 	typedef fp::Serializable<FpT<tag, maxBitSize>, Operator> Serializer;
 public:
-	static const size_t maxSize = (maxBitSize + fp::UnitBitSize - 1) / fp::UnitBitSize;
+	static const size_t maxSize = (maxBitSize + UnitBitSize - 1) / UnitBitSize;
 private:
-	template<class tag2, size_t maxBitSize2> friend class FpT;
 	Unit v_[maxSize];
 	static fp::Op op_;
-	static FpT<tag, maxBitSize> inv2_;
-	static int ioMode_;
-	static bool isETHserialization_;
 	template<class Fp> friend class FpDblT;
 	template<class Fp> friend class Fp2T;
 	template<class Fp> friend struct Fp6T;
+#ifdef MCL_XBYAK_DIRECT_CALL
+	static inline void addA(Unit *z, const Unit *x, const Unit *y)
+	{
+		op_.fp_add(z, x, y, op_.p);
+	}
+	static inline void subA(Unit *z, const Unit *x, const Unit *y)
+	{
+		op_.fp_sub(z, x, y, op_.p);
+	}
+	static inline void negA(Unit *y, const Unit *x)
+	{
+		op_.fp_neg(y, x, op_.p);
+	}
+	static inline void mulA(Unit *z, const Unit *x, const Unit *y)
+	{
+		op_.fp_mul(z, x, y, op_.p);
+	}
+	static inline void sqrA(Unit *y, const Unit *x)
+	{
+		op_.fp_sqr(y, x, op_.p);
+	}
+	static inline void mul2A(Unit *y, const Unit *x)
+	{
+//		op_.fp_mul2(y, x, op_.p);
+		op_.fp_add(y, x, x, op_.p);
+	}
+#endif
 public:
 	typedef FpT<tag, maxBitSize> BaseFp;
 	// return pointer to array v_[]
@@ -115,13 +124,11 @@ public:
 	static inline size_t getBitSize() { return op_.bitSize; }
 	static inline size_t getByteSize() { return (op_.bitSize + 7) / 8; }
 	static inline const fp::Op& getOp() { return op_; }
+	static inline fp::Op& getOpNonConst() { return op_; }
 	void dump() const
 	{
 		const size_t N = op_.N;
-		for (size_t i = 0; i < N; i++) {
-			fp::dumpUnit(v_[N - 1 - i]);
-		}
-		printf("\n");
+		bint::dump(v_, N);
 	}
 	/*
 		xi_a is used for Fp2::mul_xi(), where xi = xi_a + i and i^2 = -1
@@ -131,6 +138,9 @@ public:
 	{
 		assert(maxBitSize <= MCL_MAX_BIT_SIZE);
 		*pb = op_.init(p, maxBitSize, xi_a, mode);
+#ifdef MCL_DUMP_JIT
+		return;
+#endif
 		if (!*pb) return;
 		{ // set oneRep
 			FpT& one = *reinterpret_cast<FpT*>(op_.oneRep);
@@ -143,20 +153,25 @@ public:
 			gmp::getArray(pb, op_.half, op_.N, half);
 			if (!*pb) return;
 		}
-		inv(inv2_, 2);
-		ioMode_ = 0;
-		isETHserialization_ = false;
 #ifdef MCL_XBYAK_DIRECT_CALL
-		add = fp::func_ptr_cast<void (*)(FpT& z, const FpT& x, const FpT& y)>(op_.fp_addA_);
-		if (add == 0) add = addC;
-		sub = fp::func_ptr_cast<void (*)(FpT& z, const FpT& x, const FpT& y)>(op_.fp_subA_);
-		if (sub == 0) sub = subC;
-		neg = fp::func_ptr_cast<void (*)(FpT& y, const FpT& x)>(op_.fp_negA_);
-		if (neg == 0) neg = negC;
-		mul = fp::func_ptr_cast<void (*)(FpT& z, const FpT& x, const FpT& y)>(op_.fp_mulA_);
-		if (mul == 0) mul = mulC;
-		sqr = fp::func_ptr_cast<void (*)(FpT& y, const FpT& x)>(op_.fp_sqrA_);
-		if (sqr == 0) sqr = sqrC;
+		if (op_.fp_addA_ == 0) {
+			op_.fp_addA_ = addA;
+		}
+		if (op_.fp_subA_ == 0) {
+			op_.fp_subA_ = subA;
+		}
+		if (op_.fp_negA_ == 0) {
+			op_.fp_negA_ = negA;
+		}
+		if (op_.fp_mulA_ == 0) {
+			op_.fp_mulA_ = mulA;
+		}
+		if (op_.fp_sqrA_ == 0) {
+			op_.fp_sqrA_ = sqrA;
+		}
+		if (op_.fp_mul2A_ == 0) {
+			op_.fp_mul2A_ = mul2A;
+		}
 #endif
 		*pb = true;
 	}
@@ -192,15 +207,7 @@ public:
 	}
 	static inline bool squareRoot(FpT& y, const FpT& x)
 	{
-		if (isMont()) return op_.sq.get(y, x);
-		mpz_class mx, my;
-		bool b = false;
-		x.getMpz(&b, mx);
-		if (!b) return false;
-		b = op_.sq.get(my, mx);
-		if (!b) return false;
-		y.setMpz(&b, my);
-		return b;
+		return op_.sq.get(y, x);
 	}
 	FpT() {}
 	FpT(const FpT& x)
@@ -224,7 +231,7 @@ public:
 		} else {
 			clear();
 			if (x) {
-				int64_t y = x < 0 ? -x : x;
+				uint64_t y = fp::abs_(x);
 				if (sizeof(Unit) == 8) {
 					v_[0] = y;
 				} else {
@@ -254,33 +261,35 @@ public:
 	{
 		if (isMont()) op_.fromMont(v_, v_);
 	}
+	// deny a string with large length even if the value is in Fp
 	template<class InputStream>
 	void load(bool *pb, InputStream& is, int ioMode)
 	{
 		bool isMinus = false;
 		*pb = false;
-		if (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr)) {
+		if (fp::isIoSerializeMode(ioMode)) {
 			const size_t n = getByteSize();
-			v_[op_.N - 1] = 0;
+			uint8_t *buf = (uint8_t*)CYBOZU_ALLOCA(n);
 			size_t readSize;
 			if (ioMode & IoSerializeHexStr) {
-				readSize = mcl::fp::readHexStr(v_, n, is);
+				readSize = mcl::fp::readHexStr(buf, n, is);
 			} else {
-				readSize = cybozu::readSome(v_, n, is);
-			}
-			if (isETHserialization_ && ioMode & (IoSerialize | IoSerializeHexStr)) {
-				fp::local::byteSwap(v_, n);
+				readSize = cybozu::readSome(buf, n, is);
 			}
 			if (readSize != n) return;
+			if ((getETHserialization() || (ioMode & IoBigEndian)) && ioMode & (IoArray | IoSerialize | IoSerializeHexStr)) {
+				fp::local::byteSwap(buf, n);
+			}
+			fp::convertArrayAsLE(v_, op_.N, buf, n);
 		} else {
-			char buf[1024];
+			char buf[sizeof(*this) * 8 + 2]; // '0b' + max binary format length
 			size_t n = fp::local::loadWord(buf, sizeof(buf), is);
 			if (n == 0) return;
 			n = fp::strToArray(&isMinus, v_, op_.N, buf, n, ioMode);
 			if (n == 0) return;
 			for (size_t i = n; i < op_.N; i++) v_[i] = 0;
 		}
-		if (fp::isGreaterOrEqualArray(v_, op_.p, op_.N)) {
+		if (bint::cmpGeN(v_, op_.p, op_.N)) {
 			return;
 		}
 		if (isMinus) {
@@ -295,24 +304,23 @@ public:
 	void save(bool *pb, OutputStream& os, int ioMode) const
 	{
 		const size_t n = getByteSize();
-		if (ioMode & (IoArray | IoArrayRaw | IoSerialize | IoSerializeHexStr)) {
+		if (fp::isIoSerializeMode(ioMode)) {
+			const size_t xn = sizeof(Unit) * op_.N;
+			uint8_t *x = (uint8_t*)CYBOZU_ALLOCA(xn);
 			if (ioMode & IoArrayRaw) {
-				cybozu::write(pb, os, v_, n);
+				fp::convertArrayAsLE(x, xn, v_, op_.N);
+				cybozu::write(pb, os, x, n);
 			} else {
 				fp::Block b;
 				getBlock(b);
-				const char *src = (const char *)b.p;
-				char rev[fp::maxUnitSize * sizeof(fp::Unit)];
-				if (isETHserialization_ && ioMode & (IoSerialize | IoSerializeHexStr)) {
-					for (size_t i = 0; i < n; i++) {
-						rev[i] = src[n - 1 - i];
-					}
-					src = rev;
+				fp::convertArrayAsLE(x, xn, b.p, b.n);
+				if ((getETHserialization() || (ioMode & IoBigEndian)) && ioMode & (IoArray | IoSerialize | IoSerializeHexStr)) {
+					fp::local::byteSwap(x, n);
 				}
 				if (ioMode & IoSerializeHexStr) {
-					mcl::fp::writeHexStr(pb, os, src, n);
+					mcl::fp::writeHexStr(pb, os, x, n);
 				} else {
-					cybozu::write(pb, os, src, n);
+					cybozu::write(pb, os, x, n);
 				}
 			}
 			return;
@@ -329,31 +337,65 @@ public:
 		cybozu::write(pb, os, buf + sizeof(buf) - len, len);
 	}
 	/*
-		mode = Mod : set x mod p if sizeof(S) * n <= 64 else error
+		treat x as little endian
+		if x >= p then error
 	*/
 	template<class S>
-	void setArray(bool *pb, const S *x, size_t n, mcl::fp::MaskMode mode = fp::NoMask)
+	void setArray(bool *pb, const S *x, size_t n)
 	{
-		*pb = fp::copyAndMask(v_, x, sizeof(S) * n, op_, mode);
+		if (!fp::convertArrayAsLE(v_, op_.N, x, n)) {
+			*pb = false;
+			return;
+		}
+		if (bint::cmpGeN(v_, op_.p, op_.N)) {
+			*pb = false;
+			return;
+		}
+		*pb = true;
 		toMont();
 	}
 	/*
-		mask x with (1 << bitLen) and subtract p if x >= p
-	*/
-	template<class S>
-	void setArrayMaskMod(const S *x, size_t n)
-	{
-		fp::copyAndMask(v_, x, sizeof(S) * n, op_, fp::MaskAndMod);
-		toMont();
-	}
-
-	/*
-		mask x with (1 << (bitLen - 1)) - 1 if x >= p
+		treat x as little endian
+		x &= (1 << bitLen) = 1
+		x &= (1 << (bitLen - 1)) - 1 if x >= p
 	*/
 	template<class S>
 	void setArrayMask(const S *x, size_t n)
 	{
-		fp::copyAndMask(v_, x, sizeof(S) * n, op_, fp::SmallMask);
+		const size_t dstByte = sizeof(Unit) * op_.N;
+		if (sizeof(S) * n > dstByte) {
+			n = dstByte / sizeof(S);
+		}
+		bool b = fp::convertArrayAsLE(v_, op_.N, x, n);
+		assert(b);
+		(void)b;
+		bint::maskN(v_, op_.N, op_.bitSize);
+		if (bint::cmpGeN(v_, op_.p, op_.N)) {
+			bint::maskN(v_, op_.N, op_.bitSize - 1);
+		}
+		toMont();
+	}
+	/*
+		set (x as little endian) % p
+		error if size of x >= sizeof(Fp) * 2
+	*/
+	template<class S>
+	void setArrayMod(bool *pb, const S *x, size_t n)
+	{
+		if (sizeof(S) * n > sizeof(Unit) * op_.N * 2) {
+			*pb = false;
+			return;
+		}
+		mpz_class mx;
+		gmp::setArray(pb, mx, x, n);
+		if (!*pb) return;
+#ifdef MCL_USE_VINT
+		op_.modp.modp(mx, mx);
+#else
+		mx %= op_.mp;
+#endif
+		gmp::getArray(pb, v_, op_.N, mx);
+		if (!*pb) return;
 		toMont();
 	}
 	void getBlock(fp::Block& b) const
@@ -366,14 +408,91 @@ public:
 			b.p = &v_[0];
 		}
 	}
+	// u must be the array of the length getUnitSize() (= op_.N)
+	void getUnitArray(Unit *u) const
+	{
+		if (isMont()) {
+			op_.fromMont(u, v_);
+		} else {
+			for (size_t i = 0, n = op_.N; i < n; i++) u[i] = v_[i];
+		}
+	}
+	// u must be the array of the length getUnitSize() (= op_.N)
+	// u[] must be less than p
+	void setUnitArray(const Unit *u)
+	{
+		if (isMont()) {
+			op_.toMont(v_, u);
+		} else {
+			for (size_t i = 0, n = op_.N; i < n; i++) v_[i] = u[i];
+		}
+	}
+	/*
+		write a value with little endian
+		write buf[0] = 0 and return 1 if the value is 0
+		return written size if success else 0
+	*/
+	size_t getLittleEndian(uint8_t *buf, size_t maxN) const
+	{
+		fp::Block b;
+		getBlock(b);
+		size_t n = sizeof(Unit) * b.n;
+		uint8_t *t = (uint8_t*)CYBOZU_ALLOCA(n);
+		if (!fp::convertArrayAsLE(t, n, b.p, b.n)) {
+			return 0;
+		}
+		while (n > 0) {
+			if (t[n - 1]) break;
+			n--;
+		}
+		if (n == 0) n = 1; // zero
+		if (maxN < n) return 0;
+		for (size_t i = 0; i < n; i++) {
+			buf[i] = t[i];
+		}
+		return n;
+	}
+	/*
+		set (little endian % p)
+	*/
+	void setLittleEndianMod(bool *pb, const uint8_t *x, size_t xn)
+	{
+		setArrayMod(pb, x, xn);
+	}
+	/*
+		set (big endian % p)
+	*/
+	void setBigEndianMod(bool *pb, const uint8_t *x, size_t xn)
+	{
+		uint8_t *swapX = (uint8_t*)CYBOZU_ALLOCA(xn);
+		for (size_t i = 0; i < xn; i++) {
+			swapX[xn - 1 - i] = x[i];
+		}
+		setArrayMod(pb, swapX, xn);
+	}
 	void setByCSPRNG(bool *pb, fp::RandGen rg = fp::RandGen())
 	{
 		if (rg.isZero()) rg = fp::RandGen::get();
-		rg.read(pb, v_, op_.N * sizeof(Unit)); // byte size
+		uint8_t x[sizeof(*this)];
+		const size_t n = op_.N * sizeof(Unit);
+		rg.read(pb, x, n); // byte size
 		if (!pb) return;
+		fp::convertArrayAsLE(v_, op_.N, x, n);
 		setArrayMask(v_, op_.N);
 	}
 #ifndef CYBOZU_DONT_USE_EXCEPTION
+	void setLittleEndianMod(const uint8_t *buf, size_t bufSize)
+	{
+		bool b;
+		setLittleEndianMod(&b, buf, bufSize);
+		if (!b) throw cybozu::Exception("setLittleEndianMod");
+	}
+	void setBigEndianMod(const uint8_t *buf, size_t bufSize)
+	{
+		bool b;
+		setBigEndianMod(&b, buf, bufSize);
+		if (!b) throw cybozu::Exception("setBigEndianMod");
+	}
 	void setByCSPRNG(fp::RandGen rg = fp::RandGen())
 	{
 		bool b;
@@ -386,11 +505,15 @@ public:
 		setByCSPRNG(rg);
 	}
 	/*
-		hash msg and mask with (1 << (bitLen - 1)) - 1
+		x = SHA-256(msg) as little endian
+		p = order of a finite field
+		L = bit size of p
+		x &= (1 << L) - 1
+		if (x >= p) x &= (1 << (L - 1)) - 1
 	*/
 	void setHashOf(const void *msg, size_t msgSize)
 	{
-		char buf[MCL_MAX_HASH_BIT_SIZE / 8];
+		uint8_t buf[MCL_MAX_HASH_BIT_SIZE / 8];
 		uint32_t size = op_.hash(buf, static_cast<uint32_t>(sizeof(buf)), msg, static_cast<uint32_t>(msgSize));
 		setArrayMask(buf, size);
 	}
@@ -406,45 +529,83 @@ public:
 			*pb = false;
 			return;
 		}
-		setArray(pb, gmp::getUnit(x), gmp::getUnitSize(x));
+		setArrayMod(pb, gmp::getUnit(x), gmp::getUnitSize(x));
 	}
+	static void add(FpT& z, const FpT& x, const FpT& y)
+	{
 #ifdef MCL_XBYAK_DIRECT_CALL
-	static void (*add)(FpT& z, const FpT& x, const FpT& y);
-	static inline void addC(FpT& z, const FpT& x, const FpT& y) { op_.fp_add(z.v_, x.v_, y.v_, op_.p); }
-	static void (*sub)(FpT& z, const FpT& x, const FpT& y);
-	static inline void subC(FpT& z, const FpT& x, const FpT& y) { op_.fp_sub(z.v_, x.v_, y.v_, op_.p); }
-	static void (*neg)(FpT& y, const FpT& x);
-	static inline void negC(FpT& y, const FpT& x) { op_.fp_neg(y.v_, x.v_, op_.p); }
-	static void (*mul)(FpT& z, const FpT& x, const FpT& y);
-	static inline void mulC(FpT& z, const FpT& x, const FpT& y) { op_.fp_mul(z.v_, x.v_, y.v_, op_.p); }
-	static void (*sqr)(FpT& y, const FpT& x);
-	static inline void sqrC(FpT& y, const FpT& x) { op_.fp_sqr(y.v_, x.v_, op_.p); }
+		op_.fp_addA_(z.v_, x.v_, y.v_);
 #else
-	static inline void add(FpT& z, const FpT& x, const FpT& y) { op_.fp_add(z.v_, x.v_, y.v_, op_.p); }
-	static inline void sub(FpT& z, const FpT& x, const FpT& y) { op_.fp_sub(z.v_, x.v_, y.v_, op_.p); }
-	static inline void neg(FpT& y, const FpT& x) { op_.fp_neg(y.v_, x.v_, op_.p); }
-	static inline void mul(FpT& z, const FpT& x, const FpT& y) { op_.fp_mul(z.v_, x.v_, y.v_, op_.p); }
-	static inline void sqr(FpT& y, const FpT& x) { op_.fp_sqr(y.v_, x.v_, op_.p); }
+		op_.fp_add(z.v_, x.v_, y.v_, op_.p);
 #endif
+	}
+	static void sub(FpT& z, const FpT& x, const FpT& y)
+	{
+#ifdef MCL_XBYAK_DIRECT_CALL
+		op_.fp_subA_(z.v_, x.v_, y.v_);
+#else
+		op_.fp_sub(z.v_, x.v_, y.v_, op_.p);
+#endif
+	}
+	static void neg(FpT& y, const FpT& x)
+	{
+#ifdef MCL_XBYAK_DIRECT_CALL
+		op_.fp_negA_(y.v_, x.v_);
+#else
+		op_.fp_neg(y.v_, x.v_, op_.p);
+#endif
+	}
+	static void mul(FpT& z, const FpT& x, const FpT& y)
+	{
+#ifdef MCL_XBYAK_DIRECT_CALL
+		op_.fp_mulA_(z.v_, x.v_, y.v_);
+#else
+		op_.fp_mul(z.v_, x.v_, y.v_, op_.p);
+#endif
+	}
+	static void sqr(FpT& y, const FpT& x)
+	{
+#ifdef MCL_XBYAK_DIRECT_CALL
+		op_.fp_sqrA_(y.v_, x.v_);
+#else
+		op_.fp_sqr(y.v_, x.v_, op_.p);
+#endif
+	}
+	static void mul2(FpT& y, const FpT& x)
+	{
+#ifdef MCL_XBYAK_DIRECT_CALL
+		op_.fp_mul2A_(y.v_, x.v_);
+#else
+		add(y, x, x);
+//		op_.fp_mul2(y.v_, x.v_, op_.p);
+#endif
+	}
+	static void mul9(FpT& y, const FpT& x)
+	{
+		mulUnit(y, x, 9);
+	}
 	static inline void addPre(FpT& z, const FpT& x, const FpT& y) { op_.fp_addPre(z.v_, x.v_, y.v_); }
 	static inline void subPre(FpT& z, const FpT& x, const FpT& y) { op_.fp_subPre(z.v_, x.v_, y.v_); }
 	static inline void mulUnit(FpT& z, const FpT& x, const Unit y)
 	{
-		if (mulSmallUnit(z, x, y)) return;
+		if (mcl::fp::mulSmallUnit(z, x, y)) return;
+		if (op_.mulSmallUnit(op_.smallModP, z.v_, x.v_, y)) return;
 		op_.fp_mulUnit(z.v_, x.v_, y, op_.p);
 	}
-	static inline void inv(FpT& y, const FpT& x) { op_.fp_invOp(y.v_, x.v_, op_); }
+	// alias of mulUnit
+	static inline void mulSmall(FpT& z, const FpT& x, const uint32_t y) { mulUnit(z, x, y); }
+	static inline void inv(FpT& y, const FpT& x)
+	{
+		assert(!x.isZero());
+		op_.fp_invOp(y.v_, x.v_, op_);
+	}
 	static inline void divBy2(FpT& y, const FpT& x)
 	{
-#if 0
-		mul(y, x, inv2_);
-#else
 		bool odd = (x.v_[0] & 1) != 0;
 		op_.fp_shr1(y.v_, x.v_);
 		if (odd) {
 			op_.fp_addPre(y.v_, y.v_, op_.half);
 		}
-#endif
 	}
 	static inline void divBy4(FpT& y, const FpT& x)
 	{
@@ -452,7 +613,7 @@ public:
 		divBy2(y, y);
 	}
 	bool isZero() const { return op_.fp_isZero(v_); }
-	bool isOne() const { return fp::isEqualArray(v_, op_.oneRep, op_.N); }
+	bool isOne() const { return bint::cmpEqN(v_, op_.oneRep, op_.N); }
 	static const inline FpT& one() { return *reinterpret_cast<const FpT*>(op_.oneRep); }
 	/*
 		half = (p + 1) / 2
@@ -463,11 +624,11 @@ public:
 	{
 		fp::Block b;
 		getBlock(b);
-		return fp::isGreaterOrEqualArray(b.p, op_.half, op_.N);
+		return bint::cmpGeN(b.p, op_.half, op_.N);
 	}
 	bool isValid() const
 	{
-		return fp::isLessArray(v_, op_.p, op_.N);
+		return bint::cmpLtN(v_, op_.p, op_.N);
 	}
 	uint64_t getUint64(bool *pb) const
 	{
@@ -481,7 +642,7 @@ public:
 		getBlock(b);
 		return fp::getInt64(pb, b, op_);
 	}
-	bool operator==(const FpT& rhs) const { return fp::isEqualArray(v_, rhs.v_, op_.N); }
+	bool operator==(const FpT& rhs) const { return bint::cmpEqN(v_, rhs.v_, op_.N); }
 	bool operator!=(const FpT& rhs) const { return !operator==(rhs); }
 	/*
 		@note
@@ -492,14 +653,14 @@ public:
 		fp::Block xb, yb;
 		x.getBlock(xb);
 		y.getBlock(yb);
-		return fp::compareArray(xb.p, yb.p, op_.N);
+		return bint::cmpN(xb.p, yb.p, op_.N);
 	}
 	bool isLess(const FpT& rhs) const
 	{
 		fp::Block xb, yb;
 		getBlock(xb);
 		rhs.getBlock(yb);
-		return fp::isLessArray(xb.p, yb.p, op_.N);
+		return bint::cmpLtN(xb.p, yb.p, op_.N);
 	}
 	bool operator<(const FpT& rhs) const { return isLess(rhs); }
 	bool operator>=(const FpT& rhs) const { return !operator<(rhs); }
@@ -511,26 +672,28 @@ public:
 	*/
 	static inline int compareRaw(const FpT& x, const FpT& y)
 	{
-		return fp::compareArray(x.v_, y.v_, op_.N);
+		return bint::cmpN(x.v_, y.v_, op_.N);
 	}
 	bool isLessRaw(const FpT& rhs) const
 	{
-		return fp::isLessArray(v_, rhs.v_, op_.N);
+		return bint::cmpLtN(v_, rhs.v_, op_.N);
 	}
 	/*
 		set IoMode for operator<<(), or operator>>()
 	*/
 	static inline void setIoMode(int ioMode)
 	{
-		ioMode_ = ioMode;
+		op_.ioMode_ = ioMode;
 	}
 	static void setETHserialization(bool ETHserialization)
 	{
-		if (getBitSize() != 381) return;
-		isETHserialization_ = ETHserialization;
+		op_.ETHserialization_ = ETHserialization;
 	}
-	static inline bool isETHserialization() { return isETHserialization_; }
-	static inline int getIoMode() { return ioMode_; }
+	static bool getETHserialization()
+	{
+		return op_.ETHserialization_;
+	}
+	static inline int getIoMode() { return op_.ioMode_; }
 	static inline size_t getModBitLen() { return getBitSize(); }
 	static inline void setHashFunc(uint32_t hash(void *out, uint32_t maxOutSize, const void *msg, uint32_t msgSize))
 	{
@@ -651,20 +814,18 @@ public:
 #endif
 };
 
-template<class tag, size_t maxBitSize> fp::Op FpT<tag, maxBitSize>::op_;
-template<class tag, size_t maxBitSize> FpT<tag, maxBitSize> FpT<tag, maxBitSize>::inv2_;
-template<class tag, size_t maxBitSize> int FpT<tag, maxBitSize>::ioMode_ = IoAuto;
-template<class tag, size_t maxBitSize> bool FpT<tag, maxBitSize>::isETHserialization_ = false;
-#ifdef MCL_XBYAK_DIRECT_CALL
-template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::add)(FpT& z, const FpT& x, const FpT& y);
-template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::sub)(FpT& z, const FpT& x, const FpT& y);
-template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::neg)(FpT& y, const FpT& x);
-template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::mul)(FpT& z, const FpT& x, const FpT& y);
-template<class tag, size_t maxBitSize> void (*FpT<tag, maxBitSize>::sqr)(FpT& y, const FpT& x);
+#if defined(__GNUC__) && !defined(__ANDROID__)
+	// x must be in [200, 65535]. lower values indicate a higher priority.
+	#define MCL_INIT_PRIORITY(x) __attribute__((init_priority(x)))
+#else
+	#define MCL_INIT_PRIORITY(x)
 #endif
+// Change the priority ad hoc so that initPairing() can be called in the static constructor before the main function
+template<class tag, size_t maxBitSize> fp::Op FpT<tag, maxBitSize>::op_ MCL_INIT_PRIORITY(200);
 
 } // mcl
 
+#ifndef CYBOZU_DONT_USE_EXCEPTION
 #ifdef CYBOZU_USE_BOOST
 namespace mcl {
 
@@ -687,6 +848,7 @@ struct hash<mcl::FpT<tag, maxBitSize> > {
 };
 
 CYBOZU_NAMESPACE_TR1_END } // std::tr1
+#endif
 #endif
 
 #ifdef _MSC_VER

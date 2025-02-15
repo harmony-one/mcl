@@ -14,6 +14,8 @@ cybozu::CpuClock clk;
 typedef mcl::bn::local::Compress Compress;
 using namespace mcl::bn;
 
+#include "common_test.hpp"
+
 mcl::fp::Mode g_mode;
 
 const struct TestSet {
@@ -80,6 +82,20 @@ const struct TestSet {
 		"7212721189663231589365009629980400132745687533815732336503876102977912682966 "
 		"18569236611881855981733896549089319395087993987737891870319625215675547032585 "
 		"10088832670068482545658647976676953228519838542958787800193793260459700064172 "
+	},
+	{
+		mcl::BN_P256,
+		"BN_P256",
+		{
+			"10793813748249119388663366185155867286988665589653997902671010312229505020762",
+			"38180127804370559801487543606940725252034029064617640659435110855050183227269",
+			"73431760887927251307466131361266587522051698921503209546406677034459618131170",
+			"51612463982296078771831700406593115079246839721481729068545965952224173437665",
+		},
+		{
+			1, 2
+		},
+		0
 	},
 };
 
@@ -184,6 +200,7 @@ void testCompress(const G1& P, const G2& Q)
 
 void testPrecomputed(const G1& P, const G2& Q)
 {
+	puts("testPrecomputed");
 	Fp12 e1, e2;
 	pairing(e1, P, Q);
 	std::vector<Fp6> Qcoeff;
@@ -200,7 +217,7 @@ void testFp12pow(const G1& P, const G2& Q)
 	cybozu::XorShift rg;
 	for (int i = -10; i < 10; i++) {
 		mpz_class xm = i;
-		Fp12::pow(e1, e, xm);
+		Fp12::pow(e1, e, i);
 		Fp12::powGeneric(e2, e, xm);
 		CYBOZU_TEST_EQUAL(e1, e2);
 	}
@@ -208,14 +225,15 @@ void testFp12pow(const G1& P, const G2& Q)
 		Fr x;
 		x.setRand(rg);
 		mpz_class xm = x.getMpz();
-		Fp12::pow(e1, e, xm);
-		BN::param.glv2.pow(e2, e, xm);
+		Fp12::pow(e2, e, x);
+		Fp12::powGeneric(e1, e, xm);
 		CYBOZU_TEST_EQUAL(e1, e2);
 	}
 }
 
 void testMillerLoop2(const G1& P1, const G2& Q1)
 {
+	puts("testMillerLoop2");
 	Fp12 e1, e2, e3;
 	mpz_class c1("12342342423442");
 	mpz_class c2("329428049820348209482");
@@ -232,9 +250,11 @@ void testMillerLoop2(const G1& P1, const G2& Q1)
 	precomputeG2(Q2coeff, Q2);
 	precomputedMillerLoop2(e2, P1, Q1coeff, P2, Q2coeff);
 	precomputedMillerLoop2mixed(e3, P1, Q1, P2, Q2coeff);
-	CYBOZU_TEST_EQUAL(e2, e3);
 	finalExp(e2, e2);
+	finalExp(e3, e3);
 	CYBOZU_TEST_EQUAL(e1, e2);
+	CYBOZU_TEST_EQUAL(e1, e3);
+	CYBOZU_TEST_EQUAL(e2, e3);
 
 	// special value
 	G2 Z;
@@ -249,16 +269,71 @@ void testMillerLoop2(const G1& P1, const G2& Q1)
 	CYBOZU_TEST_EQUAL(e2, e3);
 }
 
+void testMillerLoopVec()
+{
+	puts("testMillerLoopVec");
+	const size_t n = 40;
+	G1 Pvec[n];
+	G2 Qvec[n];
+	char c = 'a';
+	for (size_t i = 0; i < n; i++) {
+		hashAndMapToG1(Pvec[i], &c, 1);
+		hashAndMapToG2(Qvec[i], &c, 1);
+		c++;
+	}
+	for (size_t m = 0; m < n; m++) {
+		Fp12 f1, f2;
+		f1 = 1;
+		f2.clear();
+		for (size_t i = 0; i < m; i++) {
+			Fp12 e;
+			millerLoop(e, Pvec[i], Qvec[i]);
+			f1 *= e;
+		}
+		millerLoopVec(f2, Pvec, Qvec, m);
+		CYBOZU_TEST_EQUAL(f1, f2);
+	}
+}
+
+void testMillerLoopVecMT()
+{
+	puts("testMillerLoopVecMT");
+	const size_t n = 40;
+	G1 Pvec[n];
+	G2 Qvec[n];
+	char c = 'a';
+	for (size_t i = 0; i < n; i++) {
+		hashAndMapToG1(Pvec[i], &c, 1);
+		hashAndMapToG2(Qvec[i], &c, 1);
+		c++;
+	}
+	for (size_t cpuN = 0; cpuN < 5; cpuN++) {
+		for (size_t m = 0; m < n; m++) {
+			Fp12 f1, f2;
+			f1 = 1;
+			f2.clear();
+			for (size_t i = 0; i < m; i++) {
+				Fp12 e;
+				millerLoop(e, Pvec[i], Qvec[i]);
+				f1 *= e;
+			}
+			millerLoopVecMT(f2, Pvec, Qvec, m, cpuN);
+			CYBOZU_TEST_EQUAL(f1, f2);
+		}
+	}
+}
+
 void testPairing(const G1& P, const G2& Q, const char *eStr)
 {
+	puts("testPairing");
 	Fp12 e1;
 	pairing(e1, P, Q);
 	Fp12 e2;
-	{
+	if (eStr) {
 		std::stringstream ss(eStr);
 		ss >> e2;
+		CYBOZU_TEST_EQUAL(e1, e2);
 	}
-	CYBOZU_TEST_EQUAL(e1, e2);
 
 	Fp12 e = e1, ea;
 	G1 Pa;
@@ -314,7 +389,7 @@ void testTrivial(const G1& P, const G2& Q)
 void testIoAll(const G1& P, const G2& Q)
 {
 	const int FpTbl[] = { 0, 2, 2|mcl::IoPrefix, 10, 16, 16|mcl::IoPrefix, mcl::IoArray, mcl::IoArrayRaw };
-	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize };
+	const int EcTbl[] = { mcl::IoEcAffine, mcl::IoEcProj, mcl::IoEcCompY, mcl::IoSerialize, mcl::IoEcAffineSerialize };
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(FpTbl); i++) {
 		for (size_t j = 0; j < CYBOZU_NUM_OF_ARRAY(EcTbl); j++) {
 			G1 P2 = P, P3;
@@ -378,6 +453,9 @@ CYBOZU_TEST_AUTO(naive)
 		testPairing(P, Q, ts.e);
 		testPrecomputed(P, Q);
 		testMillerLoop2(P, Q);
+		testMillerLoopVec();
+		testMillerLoopVecMT();
+		testCommon(P, Q);
 		testBench(P, Q);
 		benchAddDblG1();
 		benchAddDblG2();

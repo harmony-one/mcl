@@ -36,6 +36,11 @@ int ecdsaInit(void)
 	return b ? 0 : -1;
 }
 
+int ecdsaSetSerializeMode(int mode)
+{
+	return setSeriailzeMode(mode);
+}
+
 mclSize ecdsaSecretKeySerialize(void *buf, mclSize maxBufSize, const ecdsaSecretKey *sec)
 {
 	return (mclSize)cast(sec)->serialize(buf, maxBufSize);
@@ -43,6 +48,10 @@ mclSize ecdsaSecretKeySerialize(void *buf, mclSize maxBufSize, const ecdsaSecret
 mclSize ecdsaPublicKeySerialize(void *buf, mclSize maxBufSize, const ecdsaPublicKey *pub)
 {
 	return (mclSize)cast(pub)->serialize(buf, maxBufSize);
+}
+mclSize ecdsaPublicKeySerializeCompressed(void *buf, mclSize maxBufSize, const ecdsaPublicKey *pub)
+{
+	return (mclSize)cast(pub)->serializeCompressed(buf, maxBufSize);
 }
 mclSize ecdsaSignatureSerialize(void *buf, mclSize maxBufSize, const ecdsaSignature *sig)
 {
@@ -65,7 +74,9 @@ mclSize ecdsaSignatureDeserialize(ecdsaSignature* sig, const void *buf, mclSize 
 //	return 0 if success
 int ecdsaSecretKeySetByCSPRNG(ecdsaSecretKey *sec)
 {
-	cast(sec)->setByCSPRNG();
+	bool b;
+	cast(sec)->setByCSPRNG(&b);
+	if (!b) return -1;
 	return 0;
 }
 
@@ -77,6 +88,11 @@ void ecdsaGetPublicKey(ecdsaPublicKey *pub, const ecdsaSecretKey *sec)
 void ecdsaSign(ecdsaSignature *sig, const ecdsaSecretKey *sec, const void *m, mclSize size)
 {
 	sign(*cast(sig), *cast(sec), m, size);
+}
+
+void ecdsaNormalizeSignature(ecdsaSignature *sig)
+{
+	normalizeSignature(*cast(sig));
 }
 
 int ecdsaVerify(const ecdsaSignature *sig, const ecdsaPublicKey *pub, const void *m, mclSize size)

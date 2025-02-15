@@ -46,16 +46,14 @@ struct File {
 template<size_t dummy=0>
 struct Param {
 	static File f;
+	static int llvmVer;
 };
 
 template<size_t dummy>
 File Param<dummy>::f;
 
-bool isOldLLVM = false;
-
 } // mcl::impl
 
-inline bool isOldLLVM() { return impl::isOldLLVM; }
 
 struct Generator {
 	static const uint8_t None = 0;
@@ -63,7 +61,14 @@ struct Generator {
 	static const uint8_t Imm = 2;
 	static const uint8_t Ptr = 1 << 7;
 	static const uint8_t IntPtr = Int | Ptr;
-	void setOldLLVM() { impl::isOldLLVM = true; }
+	int llvmVer;
+	void setOldLLVM() { llvmVer = 0x37; }
+	static const int V8 = 0x90;
+	bool isNewer(int ver) const
+	{
+		return llvmVer > ver;
+	}
+	void setLlvmVer(int ver) { llvmVer = ver; }
 	struct Type {
 		uint8_t type;
 		bool isPtr;
@@ -138,8 +143,11 @@ struct Generator {
 	Eval _or(const Operand& x, const Operand& y);
 	void ret(const Operand& r);
 	Eval lshr(const Operand& x, uint32_t size);
+	Eval lshr(const Operand& x, const Operand& y);
 	Eval ashr(const Operand& x, uint32_t size);
+	Eval ashr(const Operand& x, const Operand& y);
 	Eval shl(const Operand& x, uint32_t size);
+	Eval shl(const Operand& x, const Operand& y);
 	Eval trunc(const Operand& x, uint32_t size);
 	Eval getelementptr(const Operand& p, const Operand& i);
 	Eval getelementptr(const Operand& p, int n);
@@ -395,6 +403,16 @@ inline Generator::Eval shiftSub(const char *name, const Generator::Operand& x, u
 	return e;
 }
 
+inline Generator::Eval shiftSub(const char *name, const Generator::Operand& x, const Generator::Operand& y)
+{
+	Generator::Eval e;
+	e.op = x;
+	e.s = name;
+	e.s += " ";
+	e.s += x.toStr() + ", " + y.getName();
+	return e;
+}
+
 } // mcl::impl
 
 inline void Generator::beginFunc(const Generator::Function& f)
@@ -449,14 +467,29 @@ inline Generator::Eval Generator::lshr(const Generator::Operand& x, uint32_t siz
 	return impl::shiftSub("lshr", x, size);
 }
 
+inline Generator::Eval Generator::lshr(const Generator::Operand& x, const Generator::Operand& y)
+{
+	return impl::shiftSub("lshr", x, y);
+}
+
 inline Generator::Eval Generator::ashr(const Generator::Operand& x, uint32_t size)
 {
 	return impl::shiftSub("ashr", x, size);
 }
 
+inline Generator::Eval Generator::ashr(const Generator::Operand& x, const Generator::Operand& y)
+{
+	return impl::shiftSub("ashr", x, y);
+}
+
 inline Generator::Eval Generator::shl(const Generator::Operand& x, uint32_t size)
 {
 	return impl::shiftSub("shl", x, size);
+}
+
+inline Generator::Eval Generator::shl(const Generator::Operand& x, const Generator::Operand& y)
+{
+	return impl::shiftSub("shl", x, y);
 }
 
 inline Generator::Eval Generator::trunc(const Generator::Operand& x, uint32_t size)
@@ -474,9 +507,11 @@ inline Generator::Eval Generator::getelementptr(const Generator::Operand& p, con
 	Eval e;
 	e.op = p;
 	e.s = "getelementptr ";
-	if (!isOldLLVM()) {
-		e.s += "i" + cybozu::itoa(p.bit) + ", ";
+	const std::string bit = cybozu::itoa(p.bit);
+	if (isNewer(V8)) {
+		e.s += " inbounds " + bit + ", ";
 	}
+	e.s += "i" + bit + ", ";
 	e.s += p.toStr() + ", " + i.toStr();
 	return e;
 }
@@ -493,9 +528,11 @@ inline Generator::Eval Generator::load(const Generator::Operand& p)
 	e.op = p;
 	e.op.type.isPtr = false;
 	e.s = "load ";
-	if (!isOldLLVM()) {
-		e.s += "i" + cybozu::itoa(p.bit) + ", ";
+	const std::string bit = cybozu::itoa(p.bit);
+	if (isNewer(V8)) {
+		e.s += "i" + bit + ", ";
 	}
+	e.s += "i" + bit + ", ";
 	e.s += p.toStr();
 	return e;
 }

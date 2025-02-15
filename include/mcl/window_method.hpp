@@ -5,66 +5,11 @@
 	@author MITSUNARI Shigeo(@herumi)
 */
 #include <mcl/array.hpp>
-#include <mcl/fp.hpp>
+#include <mcl/util.hpp>
+#include <mcl/op.hpp>
+#include <assert.h>
 
 namespace mcl { namespace fp {
-
-/*
-	get w-bit size from x[0, bitSize)
-	@param x [in] data
-	@param bitSize [in] data size
-	@param w [in] split size < UnitBitSize
-*/
-template<class T>
-struct ArrayIterator {
-	static const size_t TbitSize = sizeof(T) * 8;
-	ArrayIterator(const T *x, size_t bitSize, size_t w)
-		: x(x)
-		, bitSize(bitSize)
-		, w(w)
-		, pos(0)
-		, mask((w == TbitSize ? 0 : (T(1) << w)) - 1)
-	{
-		assert(w <= TbitSize);
-	}
-	bool hasNext() const { return bitSize > 0; }
-	T getNext()
-	{
-		if (w == TbitSize) {
-			bitSize -= w;
-			return *x++;
-		}
-		if (pos + w < TbitSize) {
-			T v = (*x >> pos) & mask;
-			pos += w;
-			if (bitSize < w) {
-				bitSize = 0;
-			} else {
-				bitSize -= w;
-			}
-			return v;
-		}
-		if (pos + bitSize <= TbitSize) {
-			assert(bitSize <= w);
-			T v = *x >> pos;
-			assert((v >> bitSize) == 0);
-			bitSize = 0;
-			return v & mask;
-		}
-		assert(pos > 0);
-		T v = (x[0] >> pos) | (x[1] << (TbitSize - pos));
-		v &= mask;
-		pos = (pos + w) - TbitSize;
-		bitSize -= w;
-		x++;
-		return v;
-	}
-	const T *x;
-	size_t bitSize;
-	size_t w;
-	size_t pos;
-	T mask;
-};
 
 template<class Ec>
 class WindowMethod {
@@ -121,7 +66,7 @@ public:
 		@param z [out] x multiplied by y
 		@param y [in] exponent
 	*/
-	template<class tag2, size_t maxBitSize2>
+	template<class tag2, size_t maxBitSize2, template<class tag2_, size_t maxBitSize2_> class FpT>
 	void mul(Ec& z, const FpT<tag2, maxBitSize2>& y) const
 	{
 		fp::Block b;
@@ -155,11 +100,10 @@ public:
 		assert((n << winSize_) <= tbl_.size());
 		if ((n << winSize_) > tbl_.size()) return;
 		assert(y[n - 1]);
-		const size_t bitSize = (n - 1) * UnitBitSize + cybozu::bsr<Unit>(y[n - 1]) + 1;
 		size_t i = 0;
-		ArrayIterator<Unit> ai(y, bitSize, winSize_);
+		BitIterator<Unit> ai(y, n);
 		do {
-			Unit v = ai.getNext();
+			Unit v = ai.getNext(winSize_);
 			if (v) {
 				Ec::add(z, z, tbl_[(i << winSize_) + v]);
 			}

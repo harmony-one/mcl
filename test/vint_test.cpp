@@ -1,5 +1,4 @@
 #include <stdio.h>
-#define MCL_MAX_BIT_SIZE 521
 #include <mcl/vint.hpp>
 #include <iostream>
 #include <sstream>
@@ -7,9 +6,6 @@
 #include <cybozu/benchmark.hpp>
 #include <cybozu/test.hpp>
 #include <cybozu/xorshift.hpp>
-#ifndef DONT_USE_GMP_IN_TEST
-#include <gmpxx.h>
-#endif
 
 #define PUT(x) std::cout << #x "=" << x << std::endl;
 
@@ -23,6 +19,111 @@ struct V {
 	int n;
 	unsigned int p[16];
 };
+
+CYBOZU_TEST_AUTO(setArray_u8)
+{
+	struct {
+		uint8_t x[12];
+		size_t size;
+		const char *s;
+	} tbl[] = {
+		{
+			{ 0x12 },
+			1,
+			"12"
+		},
+		{
+			{ 0x12, 0x34 },
+			2,
+			"3412"
+		},
+		{
+			{ 0x12, 0x34, 0x56 },
+			3,
+			"563412",
+		},
+		{
+			{ 0x12, 0x34, 0x56, 0x78 },
+			4,
+			"78563412",
+		},
+		{
+			{ 0x12, 0x34, 0x56, 0x78, 0x9a },
+			5,
+			"9a78563412",
+		},
+		{
+			{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 },
+			8,
+			"8877665544332211",
+		},
+		{
+			{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99 },
+			9,
+			"998877665544332211",
+		},
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		Vint v;
+		v.setArray(tbl[i].x, tbl[i].size);
+		CYBOZU_TEST_EQUAL(v.getStr(16), tbl[i].s);
+	}
+}
+
+CYBOZU_TEST_AUTO(setArray_u32)
+{
+	struct {
+		uint32_t x[4];
+		size_t size;
+		const char *s;
+	} tbl[] = {
+		{
+			{ 0x12345678 },
+			1,
+			"12345678"
+		},
+		{
+			{ 0x12345678, 0x11223344 },
+			2,
+			"1122334412345678"
+		},
+		{
+			{ 0x12345678, 0x11223344, 0x55667788 },
+			3,
+			"556677881122334412345678"
+		},
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		Vint v;
+		v.setArray(tbl[i].x, tbl[i].size);
+		CYBOZU_TEST_EQUAL(v.getStr(16), tbl[i].s);
+	}
+}
+
+CYBOZU_TEST_AUTO(setArray_u64)
+{
+	struct {
+		uint64_t x[2];
+		size_t size;
+		const char *s;
+	} tbl[] = {
+		{
+			{ uint64_t(0x1122334455667788ull) },
+			1,
+			"1122334455667788"
+		},
+		{
+			{ uint64_t(0x1122334455667788ull), uint64_t(0x8877665544332211ull) },
+			2,
+			"88776655443322111122334455667788"
+		},
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		Vint v;
+		v.setArray(tbl[i].x, tbl[i].size);
+		CYBOZU_TEST_EQUAL(v.getStr(16), tbl[i].s);
+	}
+}
 
 CYBOZU_TEST_AUTO(addSub)
 {
@@ -402,6 +503,12 @@ CYBOZU_TEST_AUTO(div2)
 			{ 3, { 0xfffffffd, 0xffffffff, 1 } },
 		},
 		{
+			{ 4, { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff } },
+			{ 4, { 1, 0, 0xffffffff, 0xffffffff } },
+			{ 1, { 1 } },
+			{ 2, { 0xfffffffe, 0xffffffff } },
+		},
+		{
 			{ 4, { 0, 0, 1, 1 } },
 			{ 2, { 1, 1 } },
 			{ 3, { 0, 0, 1 } },
@@ -456,7 +563,6 @@ CYBOZU_TEST_AUTO(div2)
 		y.setArray(tbl[i].y.p, tbl[i].y.n);
 		q.setArray(tbl[i].q.p, tbl[i].q.n);
 		r.setArray(tbl[i].r.p, tbl[i].r.n);
-
 		Vint qt, rt;
 		Vint::quotRem(&qt, rt, x, y);
 		CYBOZU_TEST_EQUAL(qt, q);
@@ -508,7 +614,7 @@ CYBOZU_TEST_AUTO(div2)
 	}
 }
 
-CYBOZU_TEST_AUTO(quotRem)
+CYBOZU_TEST_AUTO(divMod)
 {
 	const struct {
 		const char *x;
@@ -663,12 +769,11 @@ CYBOZU_TEST_AUTO(shift)
 	Vint x("123423424918471928374192874198274981274918274918274918243");
 	Vint y, z;
 
-	const size_t unitBitSize = Vint::unitBitSize;
 	Vint s;
 	// shl
 	for (size_t i = 1; i < 31; i++) {
 		Vint::shl(y, x, i);
-		z = x * (Vint::Unit(1) << i);
+		z = x * (Unit(1) << i);
 		CYBOZU_TEST_EQUAL(y, z);
 		y = x << i;
 		CYBOZU_TEST_EQUAL(y, z);
@@ -677,14 +782,14 @@ CYBOZU_TEST_AUTO(shift)
 		CYBOZU_TEST_EQUAL(y, z);
 	}
 	for (int i = 0; i < 4; i++) {
-		Vint::shl(y, x, i * unitBitSize);
-		Vint::pow(s, Vint(2), i * unitBitSize);
+		Vint::shl(y, x, i * UnitBitSize);
+		Vint::pow(s, Vint(2), i * UnitBitSize);
 		z = x * s;
 		CYBOZU_TEST_EQUAL(y, z);
-		y = x << (i * unitBitSize);
+		y = x << (i * UnitBitSize);
 		CYBOZU_TEST_EQUAL(y, z);
 		y = x;
-		y <<= (i * unitBitSize);
+		y <<= (i * UnitBitSize);
 		CYBOZU_TEST_EQUAL(y, z);
 	}
 	for (int i = 0; i < 100; i++) {
@@ -700,7 +805,7 @@ CYBOZU_TEST_AUTO(shift)
 	// shr
 	for (size_t i = 1; i < 31; i++) {
 		Vint::shr(y, x, i);
-		z = x / (Vint::Unit(1) << i);
+		z = x / (Unit(1) << i);
 		CYBOZU_TEST_EQUAL(y, z);
 		y = x >> i;
 		CYBOZU_TEST_EQUAL(y, z);
@@ -708,15 +813,16 @@ CYBOZU_TEST_AUTO(shift)
 		y >>= i;
 		CYBOZU_TEST_EQUAL(y, z);
 	}
+
 	for (int i = 0; i < 3; i++) {
-		Vint::shr(y, x, i * unitBitSize);
-		Vint::pow(s, Vint(2), i * unitBitSize);
+		Vint::shr(y, x, i * UnitBitSize);
+		Vint::pow(s, Vint(2), i * UnitBitSize);
 		z = x / s;
 		CYBOZU_TEST_EQUAL(y, z);
-		y = x >> (i * unitBitSize);
+		y = x >> (i * UnitBitSize);
 		CYBOZU_TEST_EQUAL(y, z);
 		y = x;
-		y >>= (i * unitBitSize);
+		y >>= (i * UnitBitSize);
 		CYBOZU_TEST_EQUAL(y, z);
 	}
 	for (int i = 0; i < 100; i++) {
@@ -730,7 +836,7 @@ CYBOZU_TEST_AUTO(shift)
 	}
 	{
 		Vint a = 0, zero = 0;
-		a <<= Vint::unitBitSize;
+		a <<= UnitBitSize;
 		CYBOZU_TEST_EQUAL(a, zero);
 	}
 }
@@ -740,9 +846,9 @@ CYBOZU_TEST_AUTO(getBitSize)
 	{
 		Vint zero = 0;
 		CYBOZU_TEST_EQUAL(zero.getBitSize(), 1);
-		zero <<= (Vint::unitBitSize - 1);
+		zero <<= UnitBitSize - 1;
 		CYBOZU_TEST_EQUAL(zero.getBitSize(), 1);
-		zero <<= Vint::unitBitSize;
+		zero <<= UnitBitSize;
 		CYBOZU_TEST_EQUAL(zero.getBitSize(), 1);
 	}
 
@@ -867,6 +973,65 @@ CYBOZU_TEST_AUTO(Vint)
 		CYBOZU_TEST_EQUAL(q2, tbl[i].q2);
 		CYBOZU_TEST_EQUAL(r2, tbl[i].r2);
 		CYBOZU_TEST_EQUAL(q2 * b + r2, a);
+		// alias pattern
+		// quotRem
+		r2 = 0;
+		Vint::quotRem(&b, r2, a, b);
+		CYBOZU_TEST_EQUAL(b, tbl[i].q2);
+		CYBOZU_TEST_EQUAL(r2, tbl[i].r2);
+		b = tbl[i].b;
+		r2 = 0;
+		Vint::quotRem(&a, r2, a, b);
+		CYBOZU_TEST_EQUAL(a, tbl[i].q2);
+		CYBOZU_TEST_EQUAL(r2, tbl[i].r2);
+		a = tbl[i].a;
+		q = 0;
+		Vint::quotRem(&q, a, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q2);
+		CYBOZU_TEST_EQUAL(a, tbl[i].r2);
+		a = tbl[i].a;
+		q = 0;
+		Vint::quotRem(&q, a, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q2);
+		CYBOZU_TEST_EQUAL(a, tbl[i].r2);
+		a = tbl[i].a;
+		q = 0;
+		Vint::quotRem(&q, b, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q2);
+		CYBOZU_TEST_EQUAL(b, tbl[i].r2);
+		Vint::quotRem(&q, a, a, a);
+		CYBOZU_TEST_EQUAL(q, 1);
+		CYBOZU_TEST_EQUAL(a, 0);
+		// divMod
+		a = tbl[i].a;
+		b = tbl[i].b;
+		r = 0;
+		Vint::divMod(&b, r, a, b);
+		CYBOZU_TEST_EQUAL(b, tbl[i].q);
+		CYBOZU_TEST_EQUAL(r, tbl[i].r);
+		b = tbl[i].b;
+		r = 0;
+		Vint::divMod(&a, r, a, b);
+		CYBOZU_TEST_EQUAL(a, tbl[i].q);
+		CYBOZU_TEST_EQUAL(r, tbl[i].r);
+		a = tbl[i].a;
+		q = 0;
+		Vint::divMod(&q, a, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q);
+		CYBOZU_TEST_EQUAL(a, tbl[i].r);
+		a = tbl[i].a;
+		q = 0;
+		Vint::divMod(&q, a, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q);
+		CYBOZU_TEST_EQUAL(a, tbl[i].r);
+		a = tbl[i].a;
+		q = 0;
+		Vint::divMod(&q, b, a, b);
+		CYBOZU_TEST_EQUAL(q, tbl[i].q);
+		CYBOZU_TEST_EQUAL(b, tbl[i].r);
+		Vint::divMod(&q, a, a, a);
+		CYBOZU_TEST_EQUAL(q, 1);
+		CYBOZU_TEST_EQUAL(a, 0);
 	}
 	CYBOZU_TEST_EQUAL(Vint("15") / Vint("3"), Vint("5"));
 	CYBOZU_TEST_EQUAL(Vint("15") / Vint("-3"), Vint("-5"));
@@ -1107,6 +1272,17 @@ CYBOZU_TEST_AUTO(powMod)
 	CYBOZU_TEST_EQUAL(y, 55277);
 	Vint::powMod(y, x, m - 1, m);
 	CYBOZU_TEST_EQUAL(y, 1);
+
+	x.setStr("2ac00f2c9af814438db241461ec7825ed88d00b0951049aa1b5116e6dca345ec", 16);
+	y.setStr("3fffffffffffffffffffffffffffffffaeabb739abd2280eeff497a3340d905", 16);
+	m.setStr("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16);
+	Vint z;
+	Vint::powMod(z, x, y-1, m);
+	CYBOZU_TEST_EQUAL(z.getStr(16), "6af700db33cdba6c5710093d7f9109c83ebad54f09ebe71a057de152b336cc8e");
+	Vint::powMod(z, x, y, m);
+	CYBOZU_TEST_EQUAL(z, 1);
+	Vint::powMod(x, x, x, m);
+	CYBOZU_TEST_EQUAL(x.getStr(16), "46f4a4a79b4937c14e782cda991fcba63cfb9f51821571e6ce08b7a29b33583d");
 }
 
 CYBOZU_TEST_AUTO(andOr)
@@ -1116,7 +1292,14 @@ CYBOZU_TEST_AUTO(andOr)
 	Vint z;
 	z = x & y;
 	CYBOZU_TEST_EQUAL(z, Vint("1209221003550923564822922"));
+	z.clear();
+	z = y & x;
+	CYBOZU_TEST_EQUAL(z, Vint("1209221003550923564822922"));
+	z.clear();
 	z = x | y;
+	CYBOZU_TEST_EQUAL(z, Vint("29348220482094820948208435244134352108849315802"));
+	z.clear();
+	z = y | x;
 	CYBOZU_TEST_EQUAL(z, Vint("29348220482094820948208435244134352108849315802"));
 #ifndef MCL_AVOID_EXCEPTION_TEST
 //	CYBOZU_TEST_EXCEPTION(Vint("-2") | Vint("5"), cybozu::Exception);
@@ -1131,6 +1314,12 @@ CYBOZU_TEST_AUTO(andOr)
 	CYBOZU_TEST_EQUAL(y, 0);
 }
 
+void invAndInc(Vint& x, const Vint& p)
+{
+	Vint::invMod(x, x, p);
+	x++;
+}
+
 CYBOZU_TEST_AUTO(invMod)
 {
 	Vint m("100000000000000000039");
@@ -1140,6 +1329,20 @@ CYBOZU_TEST_AUTO(invMod)
 		Vint::invMod(y, x, m);
 		CYBOZU_TEST_EQUAL((y * x) % m, 1);
 	}
+#ifdef NDEBUG
+	const char *tbl[] = {
+		"0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
+		"0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+		"0x2523648240000001ba344d8000000007ff9f800000000010a10000000000000d",
+		"0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
+		"0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab",
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		Vint p(tbl[i]);
+		Vint x = 2;
+		CYBOZU_BENCH_C("invMod", 1000, invAndInc, x, p);
+	}
+#endif
 }
 
 CYBOZU_TEST_AUTO(isPrime)
@@ -1225,6 +1428,8 @@ CYBOZU_TEST_AUTO(jacobi)
 	}
 }
 
+#ifdef NDEBUG
+
 CYBOZU_TEST_AUTO(bench)
 {
 	Vint x, y, z;
@@ -1259,14 +1464,9 @@ CYBOZU_TEST_AUTO(bench)
 		x.setStr(tbl[i].x);
 		y.setStr(tbl[i].y);
 		CYBOZU_BENCH_C("fast div", N, Vint::div, z, x, y);
-#ifndef DONT_USE_GMP_IN_TEST
-		{
-			mpz_class mx(tbl[i].x), my(tbl[i].y), mz;
-			CYBOZU_BENCH_C("gmp", N, mpz_div, mz.get_mpz_t(), mx.get_mpz_t(), my.get_mpz_t());
-		}
-#endif
 	}
 }
+#endif
 
 struct Seq {
 	const uint32_t *tbl;
@@ -1309,46 +1509,59 @@ CYBOZU_TEST_AUTO(divUnit)
 			uint64_t q;
 			while (seq1.next(&q)) {
 				uint64_t x[2];
-				x[0] = mcl::vint::mulUnit(&x[1], q, y);
-				mcl::vint::addu1(x, x, 2, r);
+				x[0] = mcl::bint::mulUnit1(&x[1], q, y);
+				bint::addUnit(x, 2, r);
 				uint64_t Q, R;
 //printf("q=0x%016llxull, r=0x%016llxull, y=0x%016llxull\n", (long long)q, (long long)r, (long long)y);
-				Q = mcl::vint::divUnit(&R, x[1], x[0], y);
+				Q = bint::divUnit1(&R, x[1], x[0], y);
 				CYBOZU_TEST_EQUAL(q, Q);
 				CYBOZU_TEST_EQUAL(r, R);
 			}
 		}
 	}
 }
+#endif
 
-void compareMod(const uint64_t *x, const uint64_t *p)
+template<class T, size_t N>
+void compareMod(const T *x, const T (&p)[N])
 {
-	uint64_t y1[4] = {};
-	uint64_t y2[4] = {};
-	mcl::vint::divNM((uint64_t*)0, 0, y1, x, 8, p, 4);
-	mcl::vint::mcl_fpDbl_mod_SECP256K1(y2, x, p);
-	CYBOZU_TEST_EQUAL_ARRAY(y1, y2, 4);
+	T y1[N * 2];
+	T y2[N] = {};
+	bint::copyN(y1, x, N * 2);
+	bint::div((T*)0, 0, y1, N * 2, p, N);
+	bint::mod_SECP256K1(y2, x, p);
+	CYBOZU_TEST_EQUAL_ARRAY(y1, y2, N);
 }
+
 CYBOZU_TEST_AUTO(SECP256k1)
 {
-	const uint64_t F = uint64_t(-1);
-	const uint64_t p[4] = { uint64_t(0xfffffffefffffc2full), F, F, F };
-	const uint64_t tbl[][8] = {
+	const size_t N = 32 / MCL_SIZEOF_UNIT;
+	const Unit F = Unit(-1);
+#if MCL_SIZEOF_UNIT == 8
+	const Unit p[N] = { Unit(0xfffffffefffffc2full), F, F, F };
+	const Unit tbl[][N * 2] = {
 		{ 0, 0, 0, 0, 0, 0, 0, 0 },
 		{ F, F, F, F, F, F, F, F },
 		{ F, F, F, F, 1, 0, 0, 0 },
 	};
+#else
+	const Unit p[N] = { Unit(0xfffffc2f), Unit(0xfffffffe), F, F, F, F, F, F };
+	const Unit tbl[][N * 2] = {
+		{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+		{ F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F },
+		{ F, F, F, F, F, F, F, F, 1, 0, 0, 0, 0, 0, 0, 0 },
+	};
+#endif
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
-		const uint64_t *x = tbl[i];
+		const Unit *x = tbl[i];
 		compareMod(x, p);
 	}
 	cybozu::XorShift rg;
 	for (size_t i = 0; i < 100; i++) {
-		uint64_t x[8];
-		for (int j = 0; j < 8; j++) {
+		Unit x[N * 2];
+		for (size_t j = 0; j < CYBOZU_NUM_OF_ARRAY(x); j++) {
 			x[j] = rg();
 		}
 		compareMod(x, p);
 	}
 }
-#endif

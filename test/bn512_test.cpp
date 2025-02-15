@@ -8,6 +8,8 @@
 
 using namespace mcl::bn512;
 
+#include "common_test.hpp"
+
 mcl::fp::Mode g_mode;
 
 #include "bench.hpp"
@@ -33,6 +35,7 @@ void testCurve(const mcl::CurveParam& cp)
 	pairing(e2, aP, bQ);
 	GT::pow(e1, e1, a * b);
 	CYBOZU_TEST_EQUAL(e1, e2);
+	testCommon(P, Q);
 	testBench(P, Q);
 	testSquareRoot();
 	testLagrange();
@@ -40,6 +43,8 @@ void testCurve(const mcl::CurveParam& cp)
 
 CYBOZU_TEST_AUTO(pairing)
 {
+	puts("BLS12_461");
+	testCurve(mcl::BLS12_461);
 	puts("BN462");
 	testCurve(mcl::BN462);
 	puts("BN381_1");

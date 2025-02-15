@@ -7,7 +7,7 @@
 
 typedef mcl::FpT<> Fp;
 typedef mcl::FpT<mcl::ZnTag> Zn;
-typedef mcl::EcT<Fp> Ec;
+typedef mcl::EcT<Fp, Zn> Ec;
 
 void benchFpSub(const char *pStr, const char *xStr, const char *yStr, mcl::fp::Mode mode)
 {
@@ -52,6 +52,7 @@ void benchFp(size_t bitSize, int mode)
 			"0x209348209481094820984209842094820948204204243123456789012345679003423084720472047204224233321972",
 			
 		},
+#if MCL_MAX_BIT_SIZE >= 521
 		{
 			521,
 			"0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -59,6 +60,7 @@ void benchFp(size_t bitSize, int mode)
 			"0x3948384209834029834092384204920349820948205872380573205782385729385729385723985837ffffffffffffffffffffffe26f2fc170f69466a74defd8d",
 
 		},
+#endif
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
 		if (bitSize != 0 && tbl[i].bitSize != bitSize) continue;
@@ -68,7 +70,7 @@ void benchFp(size_t bitSize, int mode)
 		if (mode & 4) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_LLVM);
 		if (mode & 8) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_LLVM_MONT);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		if (mode & 16) benchFpSub(tbl[i].p, tbl[i].x, tbl[i].y, mcl::fp::FP_XBYAK);
 #endif
 	}
@@ -76,12 +78,8 @@ void benchFp(size_t bitSize, int mode)
 
 void benchEcSub(const mcl::EcParam& para, mcl::fp::Mode mode, mcl::ec::Mode ecMode)
 {
-	Fp::init(para.p, mode);
-	Zn::init(para.n);
-	Ec::init(para.a, para.b, ecMode);
-	Fp x(para.gx);
-	Fp y(para.gy);
-	Ec P(x, y);
+	Ec P;
+	mcl::initCurve<Ec>(para.curveType, &P, mode, ecMode);
 	Ec P2; Ec::add(P2, P, P);
 	Ec Q = P + P + P;
 	double addT, add2T, subT, dblT, mulT, mulCTT, mulRandT, mulCTRandT, normT;
@@ -114,8 +112,10 @@ void benchEc(size_t bitSize, int mode, mcl::ec::Mode ecMode)
 		mcl::ecparam::NIST_P256,
 //		mcl::ecparam::secp384r1,
 		mcl::ecparam::NIST_P384,
+#if MCL_MAX_BIT_SIZE >= 521
 //		mcl::ecparam::secp521r1,
 		mcl::ecparam::NIST_P521,
+#endif
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
 		if (bitSize != 0 && tbl[i].bitSize != bitSize) continue;
@@ -126,7 +126,7 @@ void benchEc(size_t bitSize, int mode, mcl::ec::Mode ecMode)
 		if (mode & 4) benchEcSub(tbl[i], mcl::fp::FP_LLVM, ecMode);
 		if (mode & 8) benchEcSub(tbl[i], mcl::fp::FP_LLVM_MONT, ecMode);
 #endif
-#ifdef MCL_USE_XBYAK
+#ifdef MCL_X64_ASM
 		if (mode & 16) benchEcSub(tbl[i], mcl::fp::FP_XBYAK, ecMode);
 #endif
 	}
@@ -172,7 +172,7 @@ void benchFromStr16()
 		std::string str = tbl[i];
 		Fp x;
 		const size_t N = 64;
-		mcl::fp::Unit buf[N];
+		mcl::Unit buf[N];
 		CYBOZU_BENCH("fp:hexToArray", mcl::fp::hexToArray, buf, N, str.c_str(), str.size());
 
 		mpz_class y;
@@ -206,6 +206,8 @@ int main(int argc, char *argv[])
 		ecMode = mcl::ec::Jacobi;
 	} else if (ecModeStr == "proj") {
 		ecMode = mcl::ec::Proj;
+	} else if (ecModeStr == "affine") {
+		ecMode = mcl::ec::Affine;
 	} else {
 		printf("bad ecstr %s\n", ecModeStr.c_str());
 		opt.usage();

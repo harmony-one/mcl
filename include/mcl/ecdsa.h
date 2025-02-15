@@ -71,10 +71,21 @@ struct ecdsaPrecomputedPublicKey;
 */
 ECDSA_DLL_API int ecdsaInit(void);
 
+/*
+	change serializeMode
+	0 : old
+	1 : compatible with BitCoin (default)
+	return 0 if success
+*/
+ECDSA_DLL_API int ecdsaSetSerializeMode(int mode);
+
 // return written byte size if success else 0
 ECDSA_DLL_API mclSize ecdsaSecretKeySerialize(void *buf, mclSize maxBufSize, const ecdsaSecretKey *sec);
 ECDSA_DLL_API mclSize ecdsaPublicKeySerialize(void *buf, mclSize maxBufSize, const ecdsaPublicKey *pub);
 ECDSA_DLL_API mclSize ecdsaSignatureSerialize(void *buf, mclSize maxBufSize, const ecdsaSignature *sig);
+// return 0x02 + bigEndian(x) if y is even
+// return 0x03 + bigEndian(x) if y is odd
+ECDSA_DLL_API mclSize ecdsaPublicKeySerializeCompressed(void *buf, mclSize maxBufSize, const ecdsaPublicKey *pub);
 
 // return read byte size if sucess else 0
 ECDSA_DLL_API mclSize ecdsaSecretKeyDeserialize(ecdsaSecretKey* sec, const void *buf, mclSize bufSize);
@@ -88,7 +99,11 @@ ECDSA_DLL_API void ecdsaGetPublicKey(ecdsaPublicKey *pub, const ecdsaSecretKey *
 
 ECDSA_DLL_API void ecdsaSign(ecdsaSignature *sig, const ecdsaSecretKey *sec, const void *m, mclSize size);
 
+// normalize sig to lower S (r, s) such that s < half
+ECDSA_DLL_API void ecdsaNormalizeSignature(ecdsaSignature *sig);
+
 // return 1 if valid
+// accept only lower S signature
 ECDSA_DLL_API int ecdsaVerify(const ecdsaSignature *sig, const ecdsaPublicKey *pub, const void *m, mclSize size);
 ECDSA_DLL_API int ecdsaVerifyPrecomputed(const ecdsaSignature *sig, const ecdsaPrecomputedPublicKey *pub, const void *m, mclSize size);
 

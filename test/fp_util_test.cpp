@@ -78,7 +78,7 @@ CYBOZU_TEST_AUTO(hexToArray)
 	}
 }
 
-CYBOZU_TEST_AUTO(compareArray)
+CYBOZU_TEST_AUTO(cmp)
 {
 	const struct {
 		uint32_t a[4];
@@ -96,12 +96,12 @@ CYBOZU_TEST_AUTO(compareArray)
 		{ { 1, 7, 8, 4 }, { 1, 7, 8, 9 }, 4, -1 },
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
-		int e = mcl::fp::compareArray(tbl[i].a, tbl[i].b, tbl[i].n);
+		int e = mcl::bint::cmpN(tbl[i].a, tbl[i].b, tbl[i].n);
 		CYBOZU_TEST_EQUAL(e, tbl[i].expect);
 	}
 }
 
-CYBOZU_TEST_AUTO(isLessArray)
+CYBOZU_TEST_AUTO(cmpLt)
 {
 	const struct {
 		uint32_t a[4];
@@ -120,14 +120,14 @@ CYBOZU_TEST_AUTO(isLessArray)
 		{ { 1, 7, 8, 4 }, { 1, 7, 8, 9 }, 4, true },
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
-		bool e = mcl::fp::isLessArray(tbl[i].a, tbl[i].b, tbl[i].n);
+		bool e = mcl::bint::cmpLtN(tbl[i].a, tbl[i].b, tbl[i].n);
 		CYBOZU_TEST_EQUAL(e, tbl[i].expect);
-		e = mcl::fp::isGreaterArray(tbl[i].b, tbl[i].a, tbl[i].n);
+		e = mcl::bint::cmpGtN(tbl[i].b, tbl[i].a, tbl[i].n);
 		CYBOZU_TEST_EQUAL(e, tbl[i].expect);
 	}
 }
 
-CYBOZU_TEST_AUTO(isLessOrEqualArray)
+CYBOZU_TEST_AUTO(cmpLe)
 {
 	const struct {
 		uint32_t a[4];
@@ -146,9 +146,9 @@ CYBOZU_TEST_AUTO(isLessOrEqualArray)
 		{ { 1, 7, 8, 4 }, { 1, 7, 8, 9 }, 4, true },
 	};
 	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
-		bool e = mcl::fp::isLessOrEqualArray(tbl[i].a, tbl[i].b, tbl[i].n);
+		bool e = mcl::bint::cmpLeN(tbl[i].a, tbl[i].b, tbl[i].n);
 		CYBOZU_TEST_EQUAL(e, tbl[i].expect);
-		e = mcl::fp::isGreaterOrEqualArray(tbl[i].b, tbl[i].a, tbl[i].n);
+		e = mcl::bint::cmpGeN(tbl[i].b, tbl[i].a, tbl[i].n);
 		CYBOZU_TEST_EQUAL(e, tbl[i].expect);
 	}
 }
@@ -195,39 +195,6 @@ struct Rand {
 	}
 };
 
-CYBOZU_TEST_AUTO(maskArray)
-{
-#if 1
-	const size_t n = 2;
-	uint32_t org[n] = { 0xabce1234, 0xffffef32 };
-	for (size_t i = 0; i <= sizeof(org) * 8; i++) {
-		uint32_t x[n];
-		memcpy(x, org, sizeof(org));
-		mcl::fp::maskArray(x, n, i);
-		mpz_class t;
-		mcl::gmp::setArray(t, org, n);
-		t &= (mpz_class(1) << i) - 1;
-		uint32_t y[n];
-		mcl::gmp::getArray(y, n, t);
-		CYBOZU_TEST_EQUAL_ARRAY(x, y, n);
-	}
-#else
-	const size_t n = 4;
-	uint16_t org[n] = { 0x1234, 0xabce, 0xef32, 0xffff };
-	for (size_t i = 0; i <= sizeof(org) * 8; i++) {
-		uint16_t x[n];
-		memcpy(x, org, sizeof(org));
-		mcl::fp::maskArray(x, n, i);
-		mpz_class t;
-		mcl::gmp::setArray(t, org, n);
-		t &= (mpz_class(1) << i) - 1;
-		uint16_t y[n];
-		mcl::gmp::getArray(y, n, t);
-		CYBOZU_TEST_EQUAL_ARRAY(x, y, n);
-	}
-#endif
-}
-
 CYBOZU_TEST_AUTO(stream)
 {
 	const char *nulTbl[] = { "", "    ", " \t\t\n\n  " };
@@ -265,6 +232,52 @@ CYBOZU_TEST_AUTO(stream)
 				mcl::fp::local::loadWord(w, is);
 				CYBOZU_TEST_EQUAL(w, tbl[i].expect[j]);
 			}
+		}
+	}
+}
+
+CYBOZU_TEST_AUTO(BitIterator)
+{
+	const struct Tbl {
+		uint32_t v[4];
+		uint32_t n;
+	} tbl[] = {
+		{ { 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff }, 4 },
+		{ { 0 }, 1 },
+		{ { 0x12345678, 0x9abcdef0, 0xfedcba98, 0 }, 4 },
+		{ { 0x12345678, 0x9abcdef0, 0xfed,}, 3 },
+	};
+	for (size_t i = 0; i < CYBOZU_NUM_OF_ARRAY(tbl); i++) {
+		const Tbl& t = tbl[i];
+		for (size_t w = 1; w <= 32; w++) {
+			mcl::fp::BitIterator<uint32_t> bi(t.v, t.n);
+			mpz_class x;
+			mcl::gmp::setArray(x, t.v, t.n);
+			size_t bitPos = 0;
+			while (bi.hasNext()) {
+				uint32_t v1 = bi.getNext(w);
+				mpz_class v2 = x & bi.mask(w);
+				CYBOZU_TEST_EQUAL(v2, v1);
+				v1 = mcl::fp::getUnitAt(t.v, t.n, bitPos) & bi.mask(w);
+				CYBOZU_TEST_EQUAL(v2, v1);
+				bitPos += w;
+				x >>= w;
+			}
+			CYBOZU_TEST_EQUAL(x, 0);
+		}
+		// w = 1
+		{
+			mcl::fp::BitIterator<uint32_t> bi(t.v, t.n);
+			mpz_class x;
+			mcl::gmp::setArray(x, t.v, t.n);
+			while (bi.hasNext()) {
+				uint32_t v1 = bi.peekBit();
+				mpz_class v2 = x & 1;
+				CYBOZU_TEST_EQUAL(v2, v1);
+				x >>= 1;
+				bi.skipBit();
+			}
+			CYBOZU_TEST_EQUAL(x, 0);
 		}
 	}
 }

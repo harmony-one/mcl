@@ -1,9 +1,20 @@
 import os
+import sys
 import platform
 from ctypes import *
+#from ctypes.util import find_library
 
+# for init 2 Level HE
 BN254 = 0
 BLS12_381 = 5
+# for initG1only (lifted ElGamal)
+SECP192K1 = 100
+SECP224K1 = 101
+SECP256K1 = 102
+NIST_P192 = 105
+NIST_P224 = 106
+NIST_P256 = 107
+
 MCLBN_FR_UNIT_SIZE = 4
 MCLBN_FP_UNIT_SIZE = 6
 
@@ -22,26 +33,43 @@ MCLBN_COMPILED_TIME_VAR = (MCLBN_FR_UNIT_SIZE * 10) + MCLBN_FP_UNIT_SIZE
 
 Buffer = c_ubyte * 2304
 lib = None
+sysName = ''
 
-def init(curveType=BN254):
+def _init(curveType=BN254, G1only=False):
 	global lib
-	name = platform.system()
-	if name == 'Linux':
+	global sysName
+	sysName = platform.system()
+	subDir = 'lib'
+	if sysName == 'Linux':
 		libName = 'libmclshe384_256.so'
-	elif name == 'Darwin':
+	elif sysName == 'Darwin':
 		libName = 'libmclshe384_256.dylib'
-	elif name == 'Windows':
+	elif sysName == 'Windows':
 		libName = 'mclshe384_256.dll'
+		subDir = 'bin'
 	else:
-		raise RuntimeError("not support yet", name)
-	lib = cdll.LoadLibrary(libName)
-	ret = lib.sheInit(curveType, MCLBN_COMPILED_TIME_VAR)
+		raise RuntimeError("not support yet", sysName)
+#	if hasattr(os, 'add_dll_directory'):
+#		dllDir = os.path.abspath(__file__ + '../../../../bin/')
+#		os.add_dll_directory(dllDir)
+	libFullPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../' + subDir + '/' + libName)
+	lib = cdll.LoadLibrary(libFullPath)
+	if G1only:
+		ret = lib.sheInitG1only(curveType, MCLBN_COMPILED_TIME_VAR)
+	else:
+		ret = lib.sheInit(curveType, MCLBN_COMPILED_TIME_VAR)
 	if ret != 0:
 		raise RuntimeError("sheInit", ret)
 	lib.mclBn_verifyOrderG1(0)
 	lib.mclBn_verifyOrderG2(0)
 	# custom setup for a function which returns pointer
 	lib.shePrecomputedPublicKeyCreate.restype = c_void_p
+
+def init(curveType=BN254):
+	_init(curveType, False)
+
+def initG1only(curveType=SECP256K1):
+	_init(curveType, True)
 
 def setRangeForDLP(hashSize):
 	ret = lib.sheSetRangeForDLP(hashSize)
@@ -95,11 +123,12 @@ class CipherTextGT(Structure):
 
 def _enc(CT, enc, encIntVec, neg, p, m):
 	c = CT()
-	if -0x80000000 <= m <= 0x7fffffff:
-		ret = enc(byref(c.v), p, m)
-		if ret != 0:
-			raise RuntimeError("enc", m)
-		return c
+	if sysName != 'Windows': # bad encoding for negative value on Windows. fix this later
+		if -0x80000000 <= m <= 0x7fffffff:
+			ret = enc(byref(c.v), p, m)
+			if ret != 0:
+				raise RuntimeError("enc", m)
+			return c
 	if m < 0:
 		minus = True
 		m = -m
@@ -268,6 +297,32 @@ def deserializeToCipherTextGT(buf):
 	return _deserialize(CipherTextGT, lib.sheCipherTextGTDeserialize, buf)
 
 if __name__ == '__main__':
+	if len(sys.argv) > 1:
+		if not sys.argv[1] == 'g1only':
+			print("err bad option")
+			sys.exit(1)
+		initG1only(SECP256K1)
+		sec = SecretKey()
+		sec.setByCSPRNG()
+		print("sec=", sec.serializeToHexStr())
+		if sec.serialize() != deserializeToSecretKey(sec.serialize()).serialize(): print("err-ser1")
+		pub = sec.getPulicKey()
+		print("pub=", pub.serializeToHexStr())
+		if pub.serialize() != deserializeToPublicKey(pub.serialize()).serialize(): print("err-ser2")
+		ppub = pub.createPrecomputedPublicKey()
+		m1 = 123
+		m2 = 256
+		c1 = ppub.encG1(m1)
+		c2 = ppub.encG1(m2)
+		if sec.dec(c1) != m1: print("err1")
+		if sec.dec(c2) != m2: print("err2")
+		if sec.dec(add(c1, c2)) != m1 + m2: print("err3")
+		if sec.dec(mul(c1, 4)) != m1 * 4: print("err4")
+		if c1.serialize() != deserializeToCipherTextG1(c1.serialize()).serialize(): print("err-ser3")
+		ppub.destroy() # necessary to avoid memory leak
+		sys.exit(0)
+
+
 	init(BLS12_381)
 	sec = SecretKey()
 	sec.setByCSPRNG()
@@ -285,6 +340,7 @@ if __name__ == '__main__':
 	c12 = pub.encG1(m12)
 	# dec(enc) for G1
 	if sec.dec(c11) != m11: print("err1")
+	if sec.dec(pub.encG1(m22)) != m22: print("err minus")
 
 	# add/sub for G1
 	if sec.dec(add(c11, c12)) != m11 + m12: print("err2")
@@ -361,7 +417,7 @@ if __name__ == '__main__':
 	import sys
 	if sys.version_info.major >= 3:
 		import timeit
-		N = 100000
+		N = 10000
 		print(str(timeit.timeit("pub.encG1(12)", number=N, globals=globals()) / float(N) * 1e3) + "msec")
 		print(str(timeit.timeit("ppub.encG1(12)", number=N, globals=globals()) / float(N) * 1e3) + "msec")
 

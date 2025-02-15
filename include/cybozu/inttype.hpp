@@ -29,7 +29,9 @@
 		#endif
 	#endif
 #else
+#ifndef MCL_STANDALONE
 	#include <unistd.h> // for ssize_t
+#endif
 #endif
 
 #ifndef CYBOZU_ALIGN
@@ -60,6 +62,7 @@
 	#else
 		#define CYBOZU_ALLOCA(x) __builtin_alloca(x)
 	#endif
+	#define CYBOZU_ALIGNED_ALLOCA(x, align) (void*)(size_t(CYBOZU_ALLOCA((x)+(align)-1)) & ~(size_t(align)-1))
 #endif
 #ifndef CYBOZU_NUM_OF_ARRAY
 	#define CYBOZU_NUM_OF_ARRAY(x) (sizeof(x) / sizeof(*x))
@@ -71,6 +74,19 @@
 		#define CYBOZU_SNPRINTF(x, len, ...) (void)snprintf(x, len, __VA_ARGS__)
 	#endif
 #endif
+#ifndef CYBOZU_ASSUME
+	#if defined(__clang__)
+		#define CYBOZU_ASSUME(x)  assert(x); __builtin_assume(x)
+	#elif defined(_MSC_VER) || defined(__ICC)
+		#define CYBOZU_ASSUME(x)  assert(x); __assume(x)
+	#else
+		#define CYBOZU_ASSUME(x) assert(x); if (!(x)) { __builtin_unreachable(); }
+	#endif
+#endif
+
+
+// LLONG_MIN in limits.h is not defined in some env.
+#define CYBOZU_LLONG_MIN (-9223372036854775807ll-1)
 
 #define CYBOZU_CPP_VERSION_CPP03 0
 #define CYBOZU_CPP_VERSION_TR1 1
@@ -88,13 +104,13 @@
 	#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_CPP17
 #elif (__cplusplus >= 201402)
 	#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_CPP14
-#elif (__cplusplus >= 201103) || (_MSC_VER >= 1500) || defined(__GXX_EXPERIMENTAL_CXX0X__)
+#elif (__cplusplus >= 201103) || (defined(_MSC_VER) && _MSC_VER >= 1500) || defined(__GXX_EXPERIMENTAL_CXX0X__)
 	#if defined(_MSC_VER) && (_MSC_VER <= 1600)
 		#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_TR1
 	#else
 		#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_CPP11
 	#endif
-#elif CYBOZU_GNUC_PREREQ(4, 5) || (CYBOZU_GNUC_PREREQ(4, 2) && __GLIBCXX__ >= 20070719) || defined(__INTEL_COMPILER) || (__clang_major__ >= 3)
+#elif CYBOZU_GNUC_PREREQ(4, 5) || (CYBOZU_GNUC_PREREQ(4, 2) && (defined(__GLIBCXX__) &&__GLIBCXX__ >= 20070719)) || defined(__INTEL_COMPILER) || (__clang_major__ >= 3)
 	#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_TR1
 #else
 	#define CYBOZU_CPP_VERSION CYBOZU_CPP_VERSION_CPP03
@@ -115,7 +131,7 @@
 #endif
 
 #ifndef CYBOZU_OS_BIT
-	#if defined(_WIN64) || defined(__x86_64__) || defined(__AARCH64EL__) || defined(__EMSCRIPTEN__)
+	#if defined(_WIN64) || defined(__x86_64__) || defined(__AARCH64EL__) || defined(__EMSCRIPTEN__) || defined(__LP64__) || defined(_M_ARM64)
 		#define CYBOZU_OS_BIT 64
 	#else
 		#define CYBOZU_OS_BIT 32
@@ -128,7 +144,7 @@
 	#define CYBOZU_HOST_ARM 2
 	#if defined(_M_IX86) || defined(_M_AMD64) || defined(__x86_64__) || defined(__i386__)
 		#define CYBOZU_HOST CYBOZU_HOST_INTEL
-	#elif defined(__arm__) || defined(__AARCH64EL__)
+	#elif defined(__arm__) || defined(__AARCH64EL__) || defined(_M_ARM64)
 		#define CYBOZU_HOST CYBOZU_HOST_ARM
 	#else
 		#define CYBOZU_HOST CYBOZU_HOST_UNKNOWN
@@ -141,8 +157,10 @@
 	#define CYBOZU_ENDIAN_BIG 2
 	#if (CYBOZU_HOST == CYBOZU_HOST_INTEL)
 		#define CYBOZU_ENDIAN CYBOZU_ENDIAN_LITTLE
-	#elif (CYBOZU_HOST == CYBOZU_HOST_ARM) && (defined(__ARM_EABI__) || defined(__AARCH64EL__))
+	#elif (CYBOZU_HOST == CYBOZU_HOST_ARM) && (defined(__ARM_EABI__) || defined(__AARCH64EL__) || defined(_M_ARM64))
 		#define CYBOZU_ENDIAN CYBOZU_ENDIAN_LITTLE
+	#elif defined(__s390x__)
+		#define CYBOZU_ENDIAN CYBOZU_ENDIAN_BIG
 	#else
 		#define CYBOZU_ENDIAN CYBOZU_ENDIAN_UNKNOWN
 	#endif
@@ -150,8 +168,14 @@
 
 #if CYBOZU_CPP_VERSION >= CYBOZU_CPP_VERSION_CPP11
 	#define CYBOZU_NOEXCEPT noexcept
+	#define CYBOZU_NULLPTR nullptr
+	#define CYBOZU_OVERRIDE override
+	#define CYBOZU_FINAL final
 #else
 	#define CYBOZU_NOEXCEPT throw()
+	#define CYBOZU_NULLPTR 0
+	#define CYBOZU_OVERRIDE
+	#define CYBOZU_FINAL
 #endif
 namespace cybozu {
 template<class T>
